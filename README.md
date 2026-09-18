@@ -1,13 +1,13 @@
 # kglobal-analysis
 
-Milestones 1–3: KGlobal case structure/parameter inspection and time-aware access
-to one double-byte 2D Bx segment, reading one frame per call. Requires Python 3.10 or later;
+Milestones 1–4: KGlobal case structure/parameter inspection and a global time-aware
+sequence of double-byte 2D Bx segments, reading one frame per call. Requires Python 3.10 or later;
 the Bx reader uses NumPy (>=1.23).
 
 Case construction and `inspect()` still read only parameter text, never movie,
 log, or stdout contents. Binary reading happens only through an explicit
 `read_bx_frame()` call. All case access is read-only. No xarray integration,
-bulk frame loading, segment concatenation, other movie variables, four-byte
+bulk frame loading, other movie variables, four-byte
 reading, particle/checkpoint readers, plotting, or physics analysis is provided.
 
 ## Development setup
@@ -181,6 +181,54 @@ do not disable `.read_frame(...)` or the original low-level API:
 case.read_bx_frame("005", frame_index, byteorder="little")
 ```
 
+## Global Bx timeline
+
+For a case directory containing multiple Bx segments and their stdout files:
+
+```python
+bx = case.bx(byteorder="little")
+# Also available as BxSeries(case, byteorder="little").
+print(bx.suffixes)              # ("005", "006"), in physical-time order
+print(bx.frame_count)           # 40
+print(bx.times[0], bx.times[-1]) # approximately 5.05, 7.00
+print(bx.locate_time(6.00))     # ("005", 19)
+print(bx.locate_time(6.05))     # ("006", 0)
+frame = bx.read_time(6.05)      # reads only 006's local frame 0
+```
+
+Every discovered segment containing `movie.bx.NNN` participates. Companion-only
+or other-variable-only segments do not participate. An empty Bx series raises
+`ValueError`. All segments use the case's selected parameter file.
+
+Construction snapshots and validates metadata eagerly: Bx file sizes and each
+segment's actual stdout times. **No Bx sample or normalization-log contents are
+read during construction, `.times`, or `.locate_time(...)`.** Segments are sorted
+by their first validated physical timestamp, never by suffix. Within-segment
+event order is preserved; sorting does not repair invalid timestamps. Global
+times and suffixes are exposed as immutable tuples.
+
+At each boundary the next segment must start after the preceding segment ends.
+Overlaps and duplicate times raise `TimeMetadataError`; no samples are discarded.
+For multiple segments, resolved `dt*n_movieout` is required to validate boundary
+continuity. A larger spacing raises a gap error, and a smaller spacing raises a
+cadence-discontinuity error, using the same `rtol=1e-6`, `atol=1e-10` cadence
+comparison as Milestone 3. Missing cadence is an error instead of an inferred
+cadence. Final global times are also checked for finite, strictly increasing
+values. Missing/invalid stdout in any participating segment aborts construction
+with an error identifying the segment.
+
+`.locate_time(time)` returns `(suffix, local_frame_index)`. It uses Milestone 3's
+equality rule, evaluated over global spacings:
+`atol=min(1e-6, minimum_global_spacing/1000)`, `rtol=0`. Missing times raise
+`KeyError`; nonfinite requests raise `ValueError`. There is no nearest-time
+fallback, interpolation, or synthetic gap filling. `.read_time(time)` delegates
+to exactly one existing `BxSegment.read_frame()` call. Physical arrays are not
+concatenated or cached; each result is still one owning float64 `(Nx, Ny)` array.
+
+The original `case.bx_segment(...)` and `case.read_bx_frame(...)` APIs remain
+unchanged and can still access individual segments when a global timeline fails
+validation. Reconstruct the case/series snapshot after files change.
+
 ## Discovery and parameter selection
 
 - Scan immediate files only: `movie.<variable>.<digits>`, `movie.log.<digits>`,
@@ -231,6 +279,7 @@ The segment API reads absolute times directly from stdout, including for restart
 - `bx.py`: bounded single-frame Bx reading, 18-entry log validation, and decoding.
 - `times.py`: actual stdout event parsing and time-metadata validation.
 - `segment.py`: one Bx segment, absolute-time lookup, and delegated one-frame reads.
+- `series.py`: physically ordered global Bx timeline and boundary validation.
 
 The neighboring `upstream/` and `legacy/` trees are read-only references and are
 not runtime dependencies. Naming/semantics were checked against
@@ -334,3 +383,44 @@ events, duplicate/decreasing times, cadence mismatches, absent cadence metadata,
 delegation to the correct frame, and tolerance handling for very small spacings.
 No files under `upstream/`, `legacy/`, or `validation-data/` were modified. No
 multi-segment or bulk frame-loading API was added.
+
+## Milestone 4 validation results
+
+The full suite passed **65 tests**, with no skips, using Python 3.12.14 and NumPy
+2.3.5: the existing 49 tests plus 16 new synthetic/real series tests. Dependencies
+and the Milestone 2/3 readers are unchanged.
+
+The workspace stores `005` in `validation-data/hcs_large_005` and `006` in
+`validation-data/hcs_large_multi`. The latter also contains `004` and no parameter
+file. `tests/test_series_real.py` creates a temporary case directory inside
+`tests/`, linking only 005/006 and `param_hcs_large` from the first directory.
+The view is removed after each test. No source fixture is edited or moved.
+`KGLOBAL_VALIDATION_CASE` and `KGLOBAL_MULTI_VALIDATION_CASE` can override the two
+fixture directories. These tests skip only when a fixture directory is absent;
+both ran in this validation.
+
+Real combined timeline:
+
+| Property | Result |
+|---|---|
+| Participating suffixes, physical order | `('005', '006')` |
+| Total frame count | 40 |
+| First stdout time | `5.04999987242627` |
+| Boundary stdout times | `5.999999848427251 -> 6.049999847164145` |
+| Boundary spacing | `0.04999999873689376` (nominal `0.05`) |
+| Last stdout time | `6.999999823165126` |
+| `locate_time(6.00)` | `('005', 19)` |
+| `locate_time(6.05)` | `('006', 0)` |
+
+For both boundary requests, `read_time()` matched the direct segment/frame read
+element-for-element. Instrumentation verified exactly one `numpy.fromfile` call
+with 33,554,432 int16 samples (**67,108,864 bytes = 64 MiB**), at byte offset
+1,275,068,416 for 005/frame19 and offset 0 for 006/frame0. Construction and time
+lookup tests forbid opening binary/log files and forbid binary reads.
+
+Synthetic tests verify suffix order differing from physical order, frame counts,
+global mappings, boundary crossings, overlaps/duplicates, decreasing timestamps,
+missing/invalid stdout, gaps, shorter-than-cadence boundaries, missing cadence,
+floating-point tolerance, small spacings, and exactly-one-frame delegation.
+All changes are inside `kglobal-analysis/`; no xarray, Dask, plotting, particle
+reading, or other-variable support was added.
