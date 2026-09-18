@@ -1,13 +1,13 @@
 # kglobal-analysis
 
-Milestones 1–2: KGlobal case structure/parameter inspection and reconstruction
-of one double-byte 2D Bx frame from one segment. Requires Python 3.10 or later;
+Milestones 1–3: KGlobal case structure/parameter inspection and time-aware access
+to one double-byte 2D Bx segment, reading one frame per call. Requires Python 3.10 or later;
 the Bx reader uses NumPy (>=1.23).
 
 Case construction and `inspect()` still read only parameter text, never movie,
 log, or stdout contents. Binary reading happens only through an explicit
 `read_bx_frame()` call. All case access is read-only. No xarray integration,
-multi-frame loading, segment concatenation, other movie variables, four-byte
+bulk frame loading, segment concatenation, other movie variables, four-byte
 reading, particle/checkpoint readers, plotting, or physics analysis is provided.
 
 ## Development setup
@@ -127,6 +127,60 @@ Source verification (workspace-relative references):
 - `legacy/idlcodes/movienormalizescriptkglobal`, lines 180–185 and 221–231:
   Bx entry 4, float conversion (line 122), and signed-int16 inverse scaling.
 
+## One time-aware Bx segment
+
+```python
+segment = case.bx_segment("005", byteorder="little")
+# Also available as BxSegment(case, "005", byteorder="little").
+print(segment.suffix)          # "005"
+print(segment.frame_count)     # 20
+print(segment.times[0])        # 5.04999987242627, as recorded in stdout
+print(segment.times[-1])       # 5.999999848427251
+print(segment.cadence)         # 0.05, nominal dt*n_movieout metadata
+
+index = segment.frame_index_at_time(5.50)  # 9
+bx = segment.read_time(5.50)               # one frame; equivalent to read_frame(9)
+```
+
+`BxSegment` is a snapshot of one segment's frame count and nominal cadence. It
+reads and validates the matching `p3d.stdout.NNN` lazily on first time access,
+then caches an immutable tuple of timestamps. Construct a new case/segment if
+the files change. Segment construction and time lookup do not read Bx samples.
+`read_frame(index)` delegates directly to the existing Milestone 2 reader.
+
+Absolute times come **only from actual stdout event lines**:
+
+```text
+ movie output, t=   5.0499998724262696
+```
+
+Descriptive lines such as `two-byte movie output` are ignored. Event order
+defines the mapping: event 0 belongs to frame 0, event 1 to frame 1, etc. The
+suffix is a startup-checkpoint/run identifier, not a physical start time. No
+absolute times are inferred from it or synthesized from `dt*n_movieout`.
+
+Before exposing times, the segment checks that timestamp count equals binary
+frame count, all timestamps are finite and strictly increasing, and every
+observed spacing agrees with nominal cadence when available. Cadence comparison
+uses `rtol=1e-6` and `atol=1e-10` in simulation time units. Missing cadence inputs
+disable only that consistency check; stdout remains the sole source of times.
+
+Time lookup requires equality within a small floating-point tolerance:
+`atol = min(1e-6, minimum observed spacing / 1000)`, with `rtol=0`. For a single
+frame, `atol=1e-6`. This accepts decimal labels such as `5.05` despite the small
+accumulated timestep roundoff in stdout, without rounding the stored times.
+There is no nearest-time fallback or interpolation: e.g. `5.075` raises
+`KeyError`. Nonfinite requested times raise `ValueError`.
+
+Missing/unreadable stdout, malformed events, count mismatches, nonfinite or
+unordered times, and cadence mismatches raise `TimeMetadataError` (a `ValueError`
+subclass) on `.times`, `.frame_index_at_time(...)`, or `.read_time(...)`. They
+do not disable `.read_frame(...)` or the original low-level API:
+
+```python
+case.read_bx_frame("005", frame_index, byteorder="little")
+```
+
 ## Discovery and parameter selection
 
 - Scan immediate files only: `movie.<variable>.<digits>`, `movie.log.<digits>`,
@@ -166,8 +220,8 @@ comments. Unterminated block comments also raise `ValueError`.
 
 Derived values are `Nx=nx*pex`, `Ny=ny*pey`, `Nz=nz*pez`, and
 `movie_dt=dt*n_movieout`. Missing inputs produce `None`. `movie_dt` is a signed
-nominal interval, not an absolute frame time. There is no `movieout` fallback or
-restart-time reconstruction in this milestone.
+nominal interval, not an absolute frame time. There is no `movieout` fallback.
+The segment API reads absolute times directly from stdout, including for restarts.
 
 ## Organization
 
@@ -175,6 +229,8 @@ restart-time reconstruction in this milestone.
 - `parameters.py`: parameter text parsing and simple metadata derivations.
 - `case.py`: coordination, parameter-file selection, and printed summaries.
 - `bx.py`: bounded single-frame Bx reading, 18-entry log validation, and decoding.
+- `times.py`: actual stdout event parsing and time-metadata validation.
+- `segment.py`: one Bx segment, absolute-time lookup, and delegated one-frame reads.
 
 The neighboring `upstream/` and `legacy/` trees are read-only references and are
 not runtime dependencies. Naming/semantics were checked against
@@ -196,7 +252,8 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -
 Tests cover filename recognition/rejection, sparse segments and companions,
 parameter syntax and derivation, unsupported input, case selection, summary
 output, bounded Bx reads, shape/order, log parsing, quantization, and invalid
-indices/layouts. Temporary test fixtures are created and removed inside `tests/`.
+indices/layouts, stdout times, count/order/cadence errors, and time-based reads.
+Temporary test fixtures are created and removed inside `tests/`.
 
 `test_bx_real.py` uses the read-only external `../validation-data/hcs_large_005`
 fixture. Set `KGLOBAL_VALIDATION_CASE` to use another location for this same
@@ -222,7 +279,8 @@ For `hcs_large_005`: global grid `8192 × 4096 × 1`, Bx size `1,342,177,280`
 bytes, frame size `67,108,864` bytes, exactly **20 frames**. The log has **360**
 entries. Validation-only inspection of stdout found **20 actual movie-output
 lines**, from `5.0499998724262696` through `5.9999998484272510`, spaced by
-approximately `0.05`. No general stdout parser or time-coordinate API was added.
+approximately `0.05`. At Milestone 2 this was validation-only; Milestone 3 adds
+the narrow movie-event time API described above.
 
 Each call below read just one frame using `byteorder="little"` and returned an
 owning, Fortran-contiguous float64 array of shape `(8192, 4096)`.
@@ -247,3 +305,32 @@ Fixed zero-based `(x, y)` samples:
 These checks verify the explicit little-endian interpretation, offsets,
 quantization formula, and x/y ordering against independent scalar reads. They
 do not constitute automatic byte-order detection or an independent IDL execution.
+
+## Milestone 3 validation results
+
+The complete suite passed **49 tests**, with no skips, using Python 3.12.14 and
+NumPy 2.3.5. This includes the original 31 tests and 18 new synthetic/real tests.
+The Milestone 2 binary reader and dependencies are unchanged.
+
+Real segment `005` has 20 frames and 20 stdout movie times:
+
+- First time: `5.04999987242627`.
+- Last time: `5.999999848427251`.
+- Observed spacing: `0.04999999873689376` for every adjacent pair.
+- Nominal `dt*n_movieout`: `0.05`.
+
+| Requested time | Frame index |
+|---|---:|
+| 5.05 | 0 |
+| 5.10 | 1 |
+| 5.50 | 9 |
+| 5.75 | 14 |
+| 6.00 | 19 |
+
+Real reads at times `5.05` and `6.00` matched index-based reads of frames 0 and 19
+element-for-element. A request at `5.075` was rejected, not mapped to a neighbor.
+Synthetic tests also verify missing stdout, count mismatches, malformed/nonfinite
+events, duplicate/decreasing times, cadence mismatches, absent cadence metadata,
+delegation to the correct frame, and tolerance handling for very small spacings.
+No files under `upstream/`, `legacy/`, or `validation-data/` were modified. No
+multi-segment or bulk frame-loading API was added.

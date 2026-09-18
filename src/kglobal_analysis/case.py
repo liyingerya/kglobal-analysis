@@ -9,6 +9,7 @@ from .parameters import Parameters, read_parameters
 
 if TYPE_CHECKING:
     import numpy as np
+    from .segment import BxSegment
 
 
 class KGlobalCase:
@@ -52,6 +53,12 @@ class KGlobalCase:
         from .bx import bx_frame_count
 
         return bx_frame_count(self, segment)
+
+    def bx_segment(self, suffix: str, *, byteorder: str) -> "BxSegment":
+        """Access one Bx segment with absolute stdout times and one-frame reads."""
+        from .segment import BxSegment
+
+        return BxSegment(self, suffix, byteorder=byteorder)
 
     def read_bx_frame(self, segment: str, frame_index: int, *, byteorder: str) -> "np.ndarray":
         """Return one float64 Bx[x, y] frame; byteorder is 'little' or 'big'.

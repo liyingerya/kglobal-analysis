@@ -64,7 +64,7 @@ class RealBxTests(unittest.TestCase):
                 del values
 
     def test_real_stdout_has_twenty_actual_movie_events(self):
-        # Validation only: no general stdout/time reader is added to the package.
+        # Independently validate the fixture's raw stdout event lines.
         text = (REAL_CASE / "p3d.stdout.005").read_text()
         times = [float(value) for value in re.findall(
             r"^\s*movie output, t=\s*([0-9.eE+-]+)\s*$", text, re.MULTILINE)]
@@ -72,6 +72,33 @@ class RealBxTests(unittest.TestCase):
         self.assertAlmostEqual(times[0], 5.05, places=6)
         self.assertAlmostEqual(times[-1], 6.0, places=6)
         np.testing.assert_allclose(np.diff(times), 0.05, rtol=0, atol=2e-9)
+
+    def test_real_segment_times_and_lookup(self):
+        case = KGlobalCase(REAL_CASE, parameter_file="param_hcs_large")
+        segment = case.bx_segment("005", byteorder="little")
+        self.assertEqual(segment.suffix, "005")
+        self.assertEqual(segment.frame_count, 20)
+        self.assertEqual(len(segment.times), 20)
+        self.assertAlmostEqual(segment.times[0], 5.05, places=6)
+        self.assertAlmostEqual(segment.times[-1], 6.0, places=6)
+        self.assertEqual(segment.cadence, 0.05)
+        np.testing.assert_allclose(np.diff(segment.times), .05, rtol=0, atol=2e-9)
+        for time, index in ((5.05, 0), (5.1, 1), (5.5, 9), (5.75, 14), (6.0, 19)):
+            with self.subTest(time=time):
+                self.assertEqual(segment.frame_index_at_time(time), index)
+                self.assertEqual(segment.frame_index_at_time(segment.times[index]), index)
+        with self.assertRaises(KeyError):
+            segment.frame_index_at_time(5.075)
+
+    def test_real_time_reads_match_index_reads(self):
+        case = KGlobalCase(REAL_CASE, parameter_file="param_hcs_large")
+        segment = case.bx_segment("005", byteorder="little")
+        for time, index in ((5.05, 0), (6.0, 19)):
+            with self.subTest(time=time):
+                by_time = segment.read_time(time)
+                by_index = case.read_bx_frame("005", index, byteorder="little")
+                self.assertTrue(np.array_equal(by_time, by_index))
+                del by_time, by_index
 
 
 if __name__ == "__main__":
