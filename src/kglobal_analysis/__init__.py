@@ -1,4 +1,4 @@
-"""Metadata-only inspection of KGlobal simulation cases."""
+"""KGlobal metadata inspection and single-frame 2D Bx reconstruction."""
 
 from .case import KGlobalCase
 from .index import CaseIndex, Segment, parse_filename, scan_case

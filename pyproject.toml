@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kglobal-analysis"
 version = "0.1.0"
-description = "Structure and parameter inspection for KGlobal simulation cases"
+description = "KGlobal case metadata and single-frame 2D Bx reconstruction"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["numpy>=1.23"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

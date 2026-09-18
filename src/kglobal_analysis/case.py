@@ -1,11 +1,14 @@
 """Case-level metadata coordination and human-readable inspection."""
 
 from pathlib import Path
-from typing import TextIO
+from typing import TYPE_CHECKING, TextIO
 import sys
 
 from .index import scan_case
 from .parameters import Parameters, read_parameters
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 class KGlobalCase:
@@ -43,6 +46,22 @@ class KGlobalCase:
     @property
     def suffixes(self) -> tuple[str, ...]:
         return self.index.suffixes
+
+    def bx_frame_count(self, segment: str) -> int:
+        """Count complete 2D double-byte Bx frames using file size only."""
+        from .bx import bx_frame_count
+
+        return bx_frame_count(self, segment)
+
+    def read_bx_frame(self, segment: str, frame_index: int, *, byteorder: str) -> "np.ndarray":
+        """Return one float64 Bx[x, y] frame; byteorder is 'little' or 'big'.
+
+        Frame indices are zero-based. No time or segment concatenation is done.
+        The returned array owns its memory and has shape (Nx, Ny), Fortran order.
+        """
+        from .bx import read_bx_frame
+
+        return read_bx_frame(self, segment, frame_index, byteorder=byteorder)
 
     def inspect(self, *, file: TextIO | None = None) -> None:
         """Print metadata; missing parameters are reported as unknown."""
