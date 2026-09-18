@@ -10,6 +10,24 @@ log, or stdout contents. Binary reading happens only through an explicit
 multi-frame loading, segment concatenation, other movie variables, four-byte
 reading, particle/checkpoint readers, plotting, or physics analysis is provided.
 
+## Development setup
+
+Python 3.11 is recommended for development. The supported version is Python
+3.10 or later; the project has been verified on Python 3.10.8 and 3.11.13.
+From this project directory:
+
+```sh
+conda create -n kglobal python=3.11
+conda activate kglobal
+pip install -e .
+```
+
+Run the tests in the activated environment:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -v
+```
+
 ## Use
 
 From this project directory, install with `python -m pip install -e .`, or use
