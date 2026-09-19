@@ -2,7 +2,8 @@
 
 Milestones 1–9: case discovery, parameter metadata, time-lazy movie sequences,
 eager one-frame xarray access, strictly aligned multi-variable lazy Datasets,
-and read-only movie metadata validation. The format remains the
+and read-only movie metadata validation. Reduced energy-spectrum text products
+are also supported. The movie format remains the
 standard 18-variable double-byte schema. Requires Python >=3.10, NumPy >=1.23,
 xarray >=2024.7.0, and dask[array] >=2024.7.0.
 
@@ -947,3 +948,66 @@ The report records backend-neutral format, dimensions, variables, counts,
 actual timestamps, and parameter provenance for future CPU/GPU run comparisons.
 It does not infer a backend, units, staggering, spatial coordinates, or species,
 and does not perform numerical comparisons between runs.
+
+## Legacy reduced energy spectra
+
+```python
+from kglobal_analysis import KGlobalCase
+
+case = KGlobalCase("/path/to/staging")
+print(case.energy_spectrum_suffixes("electron"))
+e = case.energy_spectrum("electron", checkpoint="016")
+i = case.energy_spectrum("ion", checkpoint="016")
+print(e.storage_name, e.sentinel_value, e.width_integral)
+da = e.to_xarray()
+```
+
+This eager reader opens only small reduced text products: `xenergylog.NNN`
+(electron), `xenergylogi.NNN` (ion), and the corresponding `vd2dgyro.NNN` log.
+It never opens particle checkpoints. Discovery uses exact names with numeric
+suffixes, preserves leading zeros, and allows gaps. Reduced-product suffixes
+are discovered separately from movie segments; the discovery method rescans
+current filenames and can list a spectrum whose required log is missing.
+
+`EnergySpectrum` is a frozen object with tuple-backed numeric sequences and
+source/log paths. It preserves all **201 stored entries** in `storage_values`.
+Index 0 is exposed as `sentinel_value`; `values` contains the **200 active bins**.
+A nonzero sentinel is retained as evidence. Finite negative values and spectra
+whose integral differs from one also remain unchanged.
+
+Limits come from `Emin/Emax` or `Imin/Imax` in the reducer log, including Fortran
+D exponents. The 201 producer edges use
+`Emin * (Emax/Emin)**(j/200)` for j=0..200, with endpoints fixed to the parsed
+limits. The denominator is **200, not 201**. `lower_edges`, `upper_edges`,
+`widths`, and `centers` are available; geometric centers are Python-derived
+plotting coordinates, not explicitly stored producer coordinates.
+
+`to_xarray()` returns a detached DataArray named by the provisional quantity
+`energy_spectrum`, with dimension `energy_bin`, indices 1..200, and coordinates
+`energy_lower`, `energy_upper`, `energy_center`, and `energy_width`. Its attrs
+retain storage identity, species/category, suffix, paths, limits, and sentinel.
+No energy units or physical time are inferred: **checkpoint suffix is not
+physical time**, and legacy reduced output does not provide physical time.
+
+The values are **not raw counts**: the legacy producer accumulates 1/K
+contributions and applies bin-width normalization. `width_integral` computes
+`sum(values * widths)` over active bins as a diagnostic. The reader never
+renormalizes or repairs stored values. An integral near one is expected for
+normalized output, but is not proof that the legacy reducer was free of
+accumulator defects. Real historical 2D reduced files validate format
+compatibility and self-consistency only.
+
+`xenergylog` and `xenergylogi` are legacy storage identifiers, not canonical
+scientific names. A small explicit mapping selects storage and log labels by
+`electron`/`ion`; public quantity naming is separate. Semantic terminology may
+evolve (for example, to `energy_distribution`) without changing discovery,
+parsing, filenames, or provenance. Future reduced-product APIs should preserve
+this separation rather than infer physics from filename spelling.
+
+Missing spectrum files raise `FileNotFoundError`. Invalid numeric content,
+nonfinite values, or lengths other than 201 raise `EnergySpectrumError`.
+Missing/invalid/duplicate required log limits raise `EnergyMetadataError`
+(a subclass of `EnergySpectrumError`). Limits must be finite with
+`0 < Emin < Emax` and represent 200 distinct floating-point intervals.
+Unsupported species or non-string/non-numeric checkpoint suffixes raise
+`ValueError`. No parameter-based fallback for missing log limits is applied.

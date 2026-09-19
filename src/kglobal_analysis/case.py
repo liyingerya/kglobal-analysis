@@ -11,6 +11,7 @@ from .parameters import Parameters, read_parameters
 if TYPE_CHECKING:
     import numpy as np
     import xarray as xr
+    from .energy import EnergySpectrum
     from .manifest import MovieCaseReport
     from .segment import BxSegment, MovieSegment
     from .series import BxSeries, MovieSeries
@@ -51,6 +52,18 @@ class KGlobalCase:
     @property
     def suffixes(self) -> tuple[str, ...]:
         return self.index.suffixes
+
+    def energy_spectrum(self, species: str, *, checkpoint: str) -> "EnergySpectrum":
+        """Read one reduced text spectrum; checkpoint identifies a file, not time."""
+        from .energy import read_energy_spectrum
+
+        return read_energy_spectrum(self.directory, species, checkpoint=checkpoint)
+
+    def energy_spectrum_suffixes(self, species: str) -> tuple[str, ...]:
+        """Discover current reduced spectrum files, separately from movie segments."""
+        from .reduced import energy_spectrum_suffixes
+
+        return energy_spectrum_suffixes(self.directory, species)
 
     def validate_movie_case(self) -> "MovieCaseReport":
         """Report movie metadata consistency using text and file sizes only.
