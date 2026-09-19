@@ -1,6 +1,7 @@
 """KGlobal metadata inspection and dimension-aware movie reconstruction."""
 
 from .case import KGlobalCase
+from .distribution import ReducedDistribution, DistributionError, DistributionMetadataError
 from .energy import EnergySpectrum, EnergySpectrumError, EnergyMetadataError
 from .dataset import MovieAlignmentError
 from .format import MovieFormat, VariableSpec, VolumeLayout, STANDARD_MOVIE_FORMAT
@@ -12,6 +13,7 @@ from .times import TimeMetadataError
 from .series import BxSeries, MovieSeries
 
 __all__ = [
+    "ReducedDistribution", "DistributionError", "DistributionMetadataError",
     "EnergySpectrum", "EnergySpectrumError", "EnergyMetadataError", "MovieCaseReport", "MovieValidationIssue", "MovieAlignmentError", "KGlobalCase", "CaseIndex", "Segment", "parse_filename", "scan_case",
     "Parameters", "parse_parameters", "read_parameters", "BxSegment", "TimeMetadataError", "BxSeries",
     "MovieSegment", "MovieSeries", "MovieFormat", "VariableSpec", "VolumeLayout", "STANDARD_MOVIE_FORMAT",

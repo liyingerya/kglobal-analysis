@@ -1011,3 +1011,84 @@ Missing/invalid/duplicate required log limits raise `EnergyMetadataError`
 `0 < Emin < Emax` and represent 200 distinct floating-point intervals.
 Unsupported species or non-string/non-numeric checkpoint suffixes raise
 `ValueError`. No parameter-based fallback for missing log limits is applied.
+
+## Legacy reduced distributions
+
+Six regular-category text products are supported through two provisional
+semantic APIs:
+
+```python
+case = KGlobalCase("/path/to/staging")
+vv = case.parallel_perpendicular_velocity_distribution("electron", checkpoint="016")
+xv = case.position_parallel_velocity_distribution(
+    "ion", position_axis="x", checkpoint="016",
+)
+print(vv.storage_name)
+print(vv.region_kind)
+print(vv.value_sum)
+da = vv.to_xarray()
+```
+
+| Storage identifier | Species | Provisional quantity | Position axis |
+|---|---|---|---|
+| `vdeparperp` | electron | `parallel_perpendicular_velocity_distribution` | — |
+| `vdiparperp` | ion | `parallel_perpendicular_velocity_distribution` | — |
+| `xpepar` | electron | `position_parallel_velocity_distribution` | x |
+| `xpipar` | ion | `position_parallel_velocity_distribution` | x |
+| `ypepar` | electron | `position_parallel_velocity_distribution` | y |
+| `ypipar` | ion | `position_parallel_velocity_distribution` | y |
+
+Storage names are provenance, not canonical scientific terminology. Quantity,
+species, storage identity, region selection, and simulation dimensionality are
+separate concepts. Exact digit suffix spelling is preserved; gaps are allowed.
+**Checkpoint suffix is not physical time.** Each read opens only the selected
+reduced text file and matching `vd2dgyro` log, never raw particle checkpoints or
+movie samples. Discovery is separate from movie discovery.
+
+The current interpreted contract supports a validated inclusive rectangular
+box (`region_kind="box"`). The legacy selector is retained as
+`legacy_roi_mode=0` provenance; other modes raise `DistributionMetadataError`.
+This is a validation boundary, not a permanent region API. Available normalized
+`XMIN/XMAX`, `YMIN/YMAX`, and `ZMIN/ZMAX` are retained in `region_metadata`.
+Future region selections may include genuinely 3D volumes. A two-axis reduced
+histogram does **not** imply a 2D source simulation or a 2D selected region.
+Current x/y position products do not permanently restrict future spatial axes.
+
+Values are **normalized joint bin mass** (`value_semantics="normalized_bin_mass"`)
+for the historical regular `weight==1` category. The producer increments by
+one, then independently divides each array by its own sum when nonzero.
+Values are not raw counts, densities, continuous probability densities, or
+gyrotropic phase-space densities. `value_sum` includes every bin and is only a
+diagnostic: zero, non-unit sums, and finite negative values are preserved without
+repair or renormalization. Position/parallel products do not apply the
+perpendicular-index cutoff, so they are **not guaranteed marginals** of the
+parallel/perpendicular products.
+
+Every stored bin is active, including zero indices and endpoints. There is no
+sentinel row or column. First-index-fastest text is reconstructed in Fortran
+order without transposing: `(401, 201)` for parallel/perpendicular and
+`(101, 401)` for position/parallel. Wrong counts, malformed/nonfinite values,
+missing or ambiguous metadata, unsupported bin counts, and invalid scales or
+box extents fail explicitly.
+
+`ReducedDistribution` is frozen, with immutable numeric backing and ordered
+`axis_names`, `axis_indices`, and `axis_values`. The log supplies nominal
+code-space centers: velocity index times the species scale divided by 200;
+position origin plus index times extent divided by 100. The ion scale is
+`V_e * (R_i / R_e)`; the logged converted electron scale is not generally the
+code-light-speed scale. No parameter fallback is used. Nearest-index endpoint
+support can extend nearly half a velocity bin beyond the last nominal center;
+position endpoint supports are clipped by the box. Floating-point ties are
+producer-dependent. No edges, Jacobian corrections, or density conversions are
+provided.
+
+`to_xarray()` returns detached data and coordinates, named by the provisional
+quantity. Velocity dimensions are `("v_parallel_bin", "v_perp_bin")` with integer
+indices `-200..200`, `0..200` and attached `v_parallel`, `v_perp` coordinates.
+Position dimensions are `("position_bin", "v_parallel_bin")` with indices
+`0..100`, `-200..200` and attached `position`, `v_parallel` coordinates;
+`position_axis` distinguishes x/y in attrs. Attrs retain paths, storage shape,
+serialization, region bounds including z when supplied, and reconstruction and
+normalization provenance. No units, time coordinate, or simulation-dimensionality
+claim is inferred. Historical compatibility does not certify particle-level
+numerical correctness.

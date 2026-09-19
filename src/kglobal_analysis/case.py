@@ -11,6 +11,7 @@ from .parameters import Parameters, read_parameters
 if TYPE_CHECKING:
     import numpy as np
     import xarray as xr
+    from .distribution import ReducedDistribution
     from .energy import EnergySpectrum
     from .manifest import MovieCaseReport
     from .segment import BxSegment, MovieSegment
@@ -52,6 +53,23 @@ class KGlobalCase:
     @property
     def suffixes(self) -> tuple[str, ...]:
         return self.index.suffixes
+
+    def parallel_perpendicular_velocity_distribution(
+        self, species: str, *, checkpoint: str,
+    ) -> "ReducedDistribution":
+        """Read regular-category joint bin mass with metadata-derived velocity axes."""
+        from .distribution import read_distribution
+
+        return read_distribution(self.directory, 'parperp', species, checkpoint=checkpoint)
+
+    def position_parallel_velocity_distribution(
+        self, species: str, *, position_axis: str, checkpoint: str,
+    ) -> "ReducedDistribution":
+        """Read box-selected position/parallel bin mass; x/y storage currently supported."""
+        from .distribution import read_distribution
+
+        return read_distribution(self.directory, 'positionpar', species,
+                                 position_axis=position_axis, checkpoint=checkpoint)
 
     def energy_spectrum(self, species: str, *, checkpoint: str) -> "EnergySpectrum":
         """Read one reduced text spectrum; checkpoint identifies a file, not time."""
