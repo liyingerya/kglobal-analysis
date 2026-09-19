@@ -1,5 +1,6 @@
 """Case-level metadata coordination and human-readable inspection."""
 
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 import sys
@@ -9,6 +10,7 @@ from .parameters import Parameters, read_parameters
 
 if TYPE_CHECKING:
     import numpy as np
+    import xarray as xr
     from .segment import BxSegment, MovieSegment
     from .series import BxSeries, MovieSeries
 
@@ -77,6 +79,17 @@ class KGlobalCase:
         from .series import MovieSeries
 
         return MovieSeries(self, variable, byteorder=byteorder)
+
+    def movie_dataset(self, variables: Iterable[str], *, byteorder: str) -> "xr.Dataset":
+        """Combine movie variables with exactly matching timelines/provenance.
+
+        Construction reads metadata only. Values remain time-lazy, with whole
+        spatial frames per chunk. Incompatible coverage raises MovieAlignmentError
+        rather than joining timelines or filling missing frames.
+        """
+        from .dataset import movie_dataset
+
+        return movie_dataset(self, variables, byteorder=byteorder)
 
     def bx_frame_count(self, segment: str) -> int:
         """Count complete 2D double-byte Bx frames using file size only."""

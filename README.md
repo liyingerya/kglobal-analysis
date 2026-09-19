@@ -1,7 +1,7 @@
 # kglobal-analysis
 
-Milestones 1–7: case discovery, parameter metadata, time-lazy movie sequences,
-and eager one-frame or Dask-backed time-series xarray access. The format remains the
+Milestones 1–8: case discovery, parameter metadata, time-lazy movie sequences,
+eager one-frame xarray access, and strictly aligned multi-variable lazy Datasets. The format remains the
 standard 18-variable double-byte schema. Requires Python >=3.10, NumPy >=1.23,
 xarray >=2024.7.0, and dask[array] >=2024.7.0.
 
@@ -267,6 +267,78 @@ supports Python 3.10 ([release metadata](https://pypi.org/project/dask/2024.7.0/
 The existing `xarray>=2024.7.0` requirement is unchanged. No distributed scheduler
 package or unrelated optional extras are requested.
 
+## Strict multi-variable movie Dataset (Milestone 8)
+
+```python
+ds = case.movie_dataset(["bx", "jihpar"], byteorder="little")
+print(list(ds.data_vars))          # caller order: ['bx', 'jihpar']
+print(ds.sizes)                    # metadata only
+selected = ds.isel(time=19)        # still lazy
+frame = selected.compute(scheduler="synchronous")  # one frame per variable
+
+# Selecting a variable culls the other variables' read tasks:
+bx_frame = ds["bx"].isel(time=19).compute()
+# Two nonadjacent times execute only those variable/time tasks:
+# small = ds[["bx", "jihpar"]].isel(time=[0, 19]).compute()
+```
+
+The API accepts an ordered iterable of legacy storage names, including generators.
+Caller order is preserved in `Dataset.data_vars`. Empty collections and duplicates
+raise `ValueError`. A bare string, an unordered set, or non-string names raise
+`TypeError`. Unsupported names continue to fail through `MovieFormat` validation.
+No new physics names or species semantics are introduced.
+
+Each requested variable first gets an ordinary validated `MovieSeries`. Before
+any xarray graphs are composed, the layer checks exact equality of frame count,
+actual stdout timestamps, and the source-segment/local-frame pair at every global
+index. There is no floating-point tolerance in this alignment check: even a small
+timestamp difference is incompatible. Per-series time lookup tolerance is unchanged.
+
+Missing variable coverage, incompatible timelines/provenance, or invalid stdout
+time metadata raise the exported `MovieAlignmentError` (a `ValueError` subclass),
+with variable/reason context. Ordinary unsupported-format and binary-layout errors
+retain their existing errors. No union, intersection, truncation, or NaN filling
+is performed. An alignment error is not a physical NaN in the simulation.
+
+```python
+from kglobal_analysis import MovieAlignmentError
+
+try:
+    ds = case.movie_dataset(["bx", "jihpar"], byteorder="little")
+except MovieAlignmentError as error:
+    print(error)
+```
+
+For example, a case containing Bx 004/005/006 but only jihpar 004 is incompatible.
+To examine common 004 data, explicitly construct a case view containing the two
+004 variables and their companions (as the real tests do with temporary links).
+The Dataset API does not silently choose common coverage.
+
+Once validated, each variable is built through its existing `to_xarray()` adapter.
+Composition uses the lazy data variables and one checked coordinate set, avoiding
+xarray's implicit timeline alignment. Shared coordinates `time`, `source_segment`,
+`local_frame_index`, and `global_frame_index` remain small eager metadata.
+Every variable has dimensions `("time", "x", "y")`, or
+`("time", "x", "y", "z")` for a volume. No spatial coordinates are invented.
+Dataset attrs are only `movie_header`, `encoding`, and `storage_order`; each data
+variable retains its own `storage_name` and existing storage attrs.
+
+Construction and indexing read zero movie samples. Computing one time reads one
+whole frame for each selected variable. Computing `ds["bx"]` at one time executes
+no jihpar task. Exact stored time labels work with `.sel(time=stored_time)`;
+rounded decimal labels do not acquire KGlobal's tolerant lookup semantics. The
+Dataset adds no nearest-time convenience method; the same explicitly bounded
+native-xarray guidance above applies.
+
+**Select variables and times before materialization.** A two-variable, 20-frame
+8192×4096 Dataset represents 10 GiB of float64 values. Do not compute/load/convert
+the full real Dataset just to inspect it. One selected two-variable time slice
+still requires 512 MiB for its decoded values, plus read/compute working memory.
+Time-only chunking is unchanged: even
+`ds["bx"].isel(time=19, x=100, y=50).compute()` reads a complete source frame.
+No region reads or spatial chunks are added. Real validation remains 2D, with
+synthetic Nz > 1 tests only. This milestone adds no dependency.
+
 ## Read one Bx frame
 
 ```python
@@ -497,6 +569,7 @@ The segment API reads absolute times directly from stdout, including for restart
 - `segment.py`: generic segment/time lookup, one-frame xarray wrapping, and Bx compatibility subclass.
 - `series.py`: generic timeline/boundary validation, global frame mapping for xarray, and Bx compatibility subclass.
 - `lazy.py`: time-lazy Dask/xarray graph adapter, separate from binary decoding.
+- `dataset.py`: strict timeline/provenance checks and lazy multi-variable composition.
 
 The neighboring `upstream/` and `legacy/` trees are read-only references and are
 not runtime dependencies. Naming/semantics were checked against
@@ -760,3 +833,52 @@ Only `dask[array]>=2024.7.0` was added as a direct dependency. Existing eager
 readers, storage schema, and time lookup semantics are unchanged. Real 3D output
 remains unvalidated. No spatial chunking, region reads, new physical semantics,
 or subsequent milestone work was implemented.
+
+## Milestone 8 validation results
+
+All **119 tests passed with no skips**: the unchanged 106-test suite plus eleven
+synthetic Dataset tests and two real Dataset tests. The environment remains
+Python 3.11.13, NumPy 2.4.6, xarray 2024.7.0, and Dask 2024.7.0; no dependency
+was added or changed.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python \
+  -m unittest discover -s tests -v
+```
+
+Synthetic read-count checks with the synchronous scheduler establish:
+
+| Operation | Movie frame reads |
+|---|---:|
+| Dataset construction and time indexing | 0 |
+| One time, both variables | 2 (one per variable) |
+| One time, Bx only | 1 (no jihpar read) |
+| Two nonadjacent times, both variables | 4 (only selected variable/time pairs) |
+
+Alignment tests reject missing segments, inconsistent binary/stdout frame counts,
+nonidentical timestamps (including a 1e-9 difference), different source suffixes,
+and an injected different local-index mapping before graph construction or sample
+I/O where applicable. The local-index test injects metadata because independent
+local mappings under identical suffix/stdout files cannot otherwise be represented
+by the current filesystem model. Tests also cover empty/duplicate/unknown names,
+ordered generators, shared eager provenance, exact stored labels, and restricted
+attrs. No xarray union/intersection is used.
+
+Real tests link only Bx/jihpar/log/stdout 004 and the matching parameter file into
+a temporary case view. Each lazy variable has shape `(20, 8192, 4096)`, dimensions
+`("time", "x", "y")`, and chunks `((1,)*20, (8192,), (4096,))`. Construction and
+selection perform zero sample reads. Computing the two-variable slice at frame 19
+(actual stdout time approximately `4.999999873689376`) performs one bounded
+67,108,864-byte read for Bx and one for jihpar. Both match the existing generic
+NumPy reader element-for-element. Separately computing only Bx frame 19 performs
+one Bx read and zero jihpar reads. The full real Dataset is never materialized.
+
+The two-variable synthetic 3×2×2 Dataset has time/x/y/z dimensions and no spatial
+coordinate values. Selecting one time and jihpar computes one 12-sample frame;
+fixed voxels confirm x-fastest Fortran ordering. Spatial-point selection in 2D
+still reads the whole six-sample synthetic source frame, as intended.
+
+Only Dataset composition, validation, tests, and documentation were added.
+Existing decoders and eager/lazy single-variable APIs remain unchanged. All
+reference/validation data remains read-only. No spatial chunking, plotting,
+physics diagnostics, or subsequent milestone work was implemented.
