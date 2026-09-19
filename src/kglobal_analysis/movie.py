@@ -2,11 +2,11 @@
 
 from pathlib import Path
 from typing import TYPE_CHECKING
-import math
 import operator
 import numpy as np
 
 from .format import STANDARD_MOVIE_FORMAT, MovieFormat, VolumeLayout, movie_format
+from .movie_log import iter_movie_ranges
 
 if TYPE_CHECKING:
     from .case import KGlobalCase
@@ -68,26 +68,9 @@ def _read_movie_minmax(log_path: str | Path, variable: str, frame_index: int,
     expected = frame_count * len(schema.variables)
     selected = None
     count = 0
-    with Path(log_path).open("r", encoding="ascii") as stream:
-        for count, line in enumerate(stream, 1):
-            if count > expected:
-                raise ValueError(f"Movie log has more than {expected} entries")
-            line = line.rstrip("\r\n")
-            fields = line.split()
-            # Fortran (E14.6,E14.6) need not have whitespace between fields.
-            if len(fields) != 2 and len(line) == 28:
-                fields = [line[:14], line[14:]]
-            try:
-                if len(fields) != 2:
-                    raise ValueError("expected two numbers")
-                low, high = (float(value.replace("D", "E").replace("d", "e"))
-                             for value in fields)
-                if not math.isfinite(low) or not math.isfinite(high) or low > high:
-                    raise ValueError("invalid range")
-            except ValueError as error:
-                raise ValueError(f"Invalid movie log entry on line {count}: {line!r}") from error
-            if count - 1 == frame_index * len(schema.variables) + spec.log_index:
-                selected = (low, high)
+    for count, limits in enumerate(iter_movie_ranges(log_path, max_entries=expected), 1):
+        if count - 1 == frame_index * len(schema.variables) + spec.log_index:
+            selected = limits
     if count != expected:
         raise ValueError(f"Movie log has {count} entries; expected {expected}")
     assert selected is not None

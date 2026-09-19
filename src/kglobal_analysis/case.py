@@ -11,6 +11,7 @@ from .parameters import Parameters, read_parameters
 if TYPE_CHECKING:
     import numpy as np
     import xarray as xr
+    from .manifest import MovieCaseReport
     from .segment import BxSegment, MovieSegment
     from .series import BxSeries, MovieSeries
 
@@ -50,6 +51,15 @@ class KGlobalCase:
     @property
     def suffixes(self) -> tuple[str, ...]:
         return self.index.suffixes
+
+    def validate_movie_case(self) -> "MovieCaseReport":
+        """Report movie metadata consistency using text and file sizes only.
+
+        No sample reads, checksums, repairs, or cross-variable alignment occur.
+        """
+        from .manifest import validate_movie_case
+
+        return validate_movie_case(self)
 
     def movie_frame_count(self, variable: str, segment: str) -> int:
         """Count complete volume frames using file size, without reading samples."""

@@ -1,7 +1,8 @@
 # kglobal-analysis
 
-Milestones 1–8: case discovery, parameter metadata, time-lazy movie sequences,
-eager one-frame xarray access, and strictly aligned multi-variable lazy Datasets. The format remains the
+Milestones 1–9: case discovery, parameter metadata, time-lazy movie sequences,
+eager one-frame xarray access, strictly aligned multi-variable lazy Datasets,
+and read-only movie metadata validation. The format remains the
 standard 18-variable double-byte schema. Requires Python >=3.10, NumPy >=1.23,
 xarray >=2024.7.0, and dask[array] >=2024.7.0.
 
@@ -882,3 +883,67 @@ Only Dataset composition, validation, tests, and documentation were added.
 Existing decoders and eager/lazy single-variable APIs remain unchanged. All
 reference/validation data remains read-only. No spatial chunking, plotting,
 physics diagnostics, or subsequent milestone work was implemented.
+
+## Movie validation and provenance manifest
+
+```python
+from kglobal_analysis import KGlobalCase
+
+case = KGlobalCase("/path/to/case")
+report = case.validate_movie_case()
+print(report.summary())
+print(report.ok, report.errors, report.warnings)
+for variable in report.variables:
+    print(variable.storage_name, variable.suffixes,
+          variable.total_frame_count, variable.first_time, variable.last_time)
+metadata = report.to_dict()  # JSON-compatible; no file is written
+```
+
+`MovieCaseReport` and its nested summaries are frozen dataclasses:
+
+- `parameters`: parameter-file path and parsed definitions, global dimensions,
+  dt, n_movieout, nominal cadence, header, encoding flags, selected schema names,
+  and bytes per frame when the format/dimensions are supported.
+- `segments`: suffix, binary paths/sizes/frame counts, stdout path/event count/
+  validated times, and log path/entry count/frame count/validation status.
+- `variables`: storage name, suffixes (physical-time order when valid), counts
+  per segment, total frame count, timeline validity, and first/last valid times.
+- `errors` / `warnings`: issues with stable category codes, messages, and
+  applicable suffix, storage name, or path. `absent_schema_variables` lists
+  missing standard variables. `.ok` means there are no metadata errors.
+
+Errors include partial binary frames, incompatible binary/stdout/log counts,
+invalid timestamps or min/max ranges, missing required companions, unsupported
+formats, and overlapping, duplicate, gapped, or cadence-inconsistent variable
+segments. Missing standard variables and narrower internally valid coverage are
+coverage facts/warnings: all 18 variables are **not** required. Companion-only
+segments are retained. The report never repairs data or aligns variables into a
+Dataset; strict `movie_dataset()` alignment remains unchanged.
+
+Counts come from `VolumeLayout` and binary file sizes. Times come exclusively
+from actual stdout events, with existing time and `MovieSeries` boundary
+validators. Suffixes are identifiers, never physical times. The decoder and
+manifest share log-range parsing; log widths come from the selected MovieFormat.
+Unknown/unverifiable quantities remain `None`. `stdout_valid` describes the
+stdout timeline itself; binary count mismatches are separate errors.
+`timeline_valid` describes binary/time coverage independently of log validity.
+Malformed parameter syntax still raises during `KGlobalCase` construction.
+Construct a new case to rediscover changed files or parameter definitions.
+
+**Zero movie-sample I/O:** validation reads parameter/stdout/log text and stats
+binary sizes only. It does not open binary sample streams or compute checksums.
+Full binary hashing is deliberately deferred to keep this metadata-fast. An OK
+report is not evidence that the sample values are correct or the files unchanged.
+
+Real validation uses a temporary symlink view of Bx 004/005/006, jihpar 004,
+three log/stdout pairs, and `param_hcs_large`: 8192 × 4096 × 1, standard
+`movie_kglobal3.0.h`, double-byte encoding, nominal cadence 0.05. Bx has 60
+frames at approximately 4.05–7.00; jihpar has 20 at approximately 4.05–5.00.
+The case is valid with unequal-coverage and absent-variable warnings. Tests
+forbid binary opens, NumPy sample reads, and frame-reader calls during manifest
+construction. Synthetic volume metadata is tested; real 3D remains unvalidated.
+
+The report records backend-neutral format, dimensions, variables, counts,
+actual timestamps, and parameter provenance for future CPU/GPU run comparisons.
+It does not infer a backend, units, staggering, spatial coordinates, or species,
+and does not perform numerical comparisons between runs.
