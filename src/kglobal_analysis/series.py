@@ -1,8 +1,9 @@
-"""A validated global Bx timeline with lazy, one-frame reads."""
+"""A validated global movie timeline with lazy, one-frame reads."""
 
 from typing import TYPE_CHECKING
 import math
 
+from .format import movie_format
 from .times import TimeMetadataError, validate_movie_times
 
 if TYPE_CHECKING:
@@ -10,33 +11,35 @@ if TYPE_CHECKING:
     from .case import KGlobalCase
 
 
-class BxSeries:
-    """Combine every Bx segment in a case, ordered by actual stdout times.
+class MovieSeries:
+    """Combine every segment of one supported storage variable in a case, ordered by actual stdout times.
 
     Construction reads stdout metadata and binary file sizes, never samples.
     Multiple segments require nominal cadence to validate their boundaries.
     No overlaps, duplicate times, gaps, or cadence discontinuities are repaired.
     """
 
-    def __init__(self, case: "KGlobalCase", *, byteorder: str):
+    def __init__(self, case: "KGlobalCase", variable: str, *, byteorder: str):
         if byteorder not in ("little", "big"):
             raise ValueError("byteorder must be explicitly 'little' or 'big'")
+        self.variable = movie_format(case.parameters).variable(variable)
+        label = "Bx" if variable == "bx" else variable
         segments = []
         for suffix, entry in case.index.segments.items():
-            if "bx" not in entry.movies:
+            if self.variable.storage_name not in entry.movies:
                 continue
-            segment = case.bx_segment(suffix, byteorder=byteorder)
+            segment = self._make_segment(case, suffix, byteorder=byteorder)
             try:
                 _ = segment.times
             except TimeMetadataError as error:
-                raise TimeMetadataError(f"Bx segment {suffix}: {error}") from error
+                raise TimeMetadataError(f"{label} segment {suffix}: {error}") from error
             segments.append(segment)
         if not segments:
-            raise ValueError("No Bx segments available in this case")
+            raise ValueError(f"No {label} segments available in this case")
         segments.sort(key=lambda segment: segment.times[0])
         cadence = case.parameters.movie_dt
         if len(segments) > 1 and cadence is None:
-            raise TimeMetadataError("Resolved dt*n_movieout is required to validate Bx segment boundaries")
+            raise TimeMetadataError(f"Resolved dt*n_movieout is required to validate {label} segment boundaries")
         for previous, following in zip(segments, segments[1:]):
             left, right = previous.times[-1], following.times[0]
             boundary = f"{previous.suffix} -> {following.suffix} ({left} -> {right})"
@@ -50,13 +53,17 @@ class BxSeries:
         self._times = tuple(time for segment in segments for time in segment.times)
         self._locations = tuple((segment.suffix, index) for segment in segments
                                 for index in range(segment.frame_count))
-        validate_movie_times(self._times, sum(segment.frame_count for segment in segments), cadence)
+        validate_movie_times(self._times, sum(segment.frame_count for segment in segments), cadence,
+                             variable=self.variable.storage_name)
         self._tolerance = min(1e-6, min((b - a for a, b in zip(self._times, self._times[1:])),
                                      default=math.inf) / 1000)
 
+    def _make_segment(self, case, suffix: str, *, byteorder: str):
+        return case.movie_segment(self.variable.storage_name, suffix, byteorder=byteorder)
+
     @property
     def suffixes(self) -> tuple[str, ...]:
-        """Participating Bx suffixes in physical-time order."""
+        """Participating variable suffixes in physical-time order."""
         return tuple(self._segments)
 
     @property
@@ -80,12 +87,22 @@ class BxSeries:
         matches = [index for index, stored in enumerate(self.times)
                    if abs(stored - time) <= self._tolerance]
         if not matches:
-            raise KeyError(f"No Bx frame at time {time} (atol={self._tolerance})")
+            raise KeyError(f"No {self.variable.storage_name} frame at time {time} (atol={self._tolerance})")
         if len(matches) != 1:
-            raise ValueError(f"Ambiguous Bx time {time}")
+            raise ValueError(f"Ambiguous {self.variable.storage_name} time {time}")
         return self._locations[matches[0]]
 
     def read_time(self, time: float) -> "np.ndarray":
-        """Read only the located segment's one local frame via BxSegment."""
+        """Read only the located segment's one local frame via MovieSegment."""
         suffix, index = self.locate_time(time)
         return self._segments[suffix].read_frame(index)
+
+
+class BxSeries(MovieSeries):
+    """Original Bx entry point, sharing the generic timeline implementation."""
+
+    def __init__(self, case: "KGlobalCase", *, byteorder: str):
+        super().__init__(case, "bx", byteorder=byteorder)
+
+    def _make_segment(self, case, suffix: str, *, byteorder: str):
+        return case.bx_segment(suffix, byteorder=byteorder)

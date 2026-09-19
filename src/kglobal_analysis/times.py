@@ -40,14 +40,15 @@ def read_movie_times(path: str | Path) -> tuple[float, ...]:
 
 
 def validate_movie_times(times: tuple[float, ...], frame_count: int,
-                         cadence: float | None) -> None:
+                         cadence: float | None, *, variable: str = "bx") -> None:
     """Check count, finite/increasing times, and optional nominal cadence.
 
     Cadence comparison uses rtol=1e-6 and atol=1e-10 in simulation time units.
     Values from stdout are never replaced with a synthetic cadence grid.
     """
+    label = "Bx" if variable == "bx" else variable
     if len(times) != frame_count:
-        raise TimeMetadataError(f"Stdout has {len(times)} movie timestamps; Bx has {frame_count} frames")
+        raise TimeMetadataError(f"Stdout has {len(times)} movie timestamps; {label} has {frame_count} frames")
     if not all(math.isfinite(time) for time in times):
         raise TimeMetadataError("Movie timestamps must be finite")
     if cadence is not None and (not math.isfinite(cadence) or cadence <= 0):

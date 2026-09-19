@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kglobal-analysis"
 version = "0.1.0"
-description = "KGlobal case metadata and single-frame 2D Bx reconstruction"
+description = "KGlobal case metadata and lazy dimension-aware movie reconstruction"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.23"]

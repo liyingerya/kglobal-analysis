@@ -1,14 +1,17 @@
 # kglobal-analysis
 
-Milestones 1–4: KGlobal case structure/parameter inspection and a global time-aware
-sequence of double-byte 2D Bx segments, reading one frame per call. Requires Python 3.10 or later;
-the Bx reader uses NumPy (>=1.23).
+Milestones 1–5: case discovery, parameter metadata, and lazy time-aware movie
+sequences using the standard 18-variable double-byte format. Requires Python
+3.10 or later and NumPy >=1.23 for decoding.
 
-Case construction and `inspect()` still read only parameter text, never movie,
-log, or stdout contents. Binary reading happens only through an explicit
-`read_bx_frame()` call. All case access is read-only. No xarray integration,
-bulk frame loading, other movie variables, four-byte
-reading, particle/checkpoint readers, plotting, or physics analysis is provided.
+Case construction and `inspect()` read only parameter text. Explicit frame reads
+load one bounded frame; timeline construction reads sizes and stdout metadata,
+not binary samples. All case access is read-only. No xarray, Dask, four-byte,
+particle/checkpoint readers, plotting, or physics analysis is provided.
+
+The decoder supports a dimension-aware volume layout. **Synthetic Nz > 1 layouts
+are tested; real-data validation remains 2D.** This does not validate real 3D
+KGlobal simulations. Existing Bx APIs preserve their original 2D behavior.
 
 ## Development setup
 
@@ -52,6 +55,68 @@ print(case.parameters.movie_dt)
 
 The constructor takes a metadata snapshot. Construct a new case to rescan.
 `inspect(file=stream)` can send the summary to a text stream.
+
+## Generic movie API (Milestone 5)
+
+```python
+case = KGlobalCase("/path/to/case")
+frame = case.read_movie_frame("jihpar", "004", 0, byteorder="little")
+count = case.movie_frame_count("jihpar", "004")
+segment = case.movie_segment("jihpar", "004", byteorder="little")
+print(segment.variable.storage_name, segment.frame_count, segment.times)
+frame = segment.read_time(4.05)
+
+series = case.movie("jihpar", byteorder="little")
+print(series.suffixes, series.frame_count, series.times)
+print(series.locate_time(5.00))  # ("004", 19) for the real fixture
+frame = series.read_time(5.00)
+# case.movie("bx", ...), case.movie("ni", ...), etc. use the same machinery.
+```
+
+The exported `MovieSegment(case, variable, suffix, *, byteorder)` and
+`MovieSeries(case, variable, *, byteorder)` implement the same time semantics
+as the Bx interfaces below. Only segments containing the selected variable
+participate. Missing/invalid stdout, overlaps, and cadence gaps are errors;
+there is no interpolation or nearest-time fallback. Every read delegates to
+one generic decoder. No arrays are concatenated or cached.
+
+`STANDARD_MOVIE_FORMAT` is an explicit `MovieFormat` for `movie_kglobal3.0.h`.
+Its immutable `VariableSpec` records contain `storage_name` and `log_index`:
+
+```text
+0 ni       1 jix       2 jiy       3 jiz       4 bx       5 by
+6 bz       7 pi        8 neh       9 pehpar   10 pehperp 11 epar
+12 pc     13 jhpar    14 nih      15 pihpar   16 pihperp 17 jihpar
+```
+
+These are legacy storage identities, **not canonical physics names**. No species
+vocabulary or aliases are defined. Future semantic names can map to these records
+without changing decoding. An unknown variable is rejected even when a file with
+that name exists. Only this schema and `double_byte` are accepted; `four_byte`,
+`movie_header2`, `mult_species`, `heatfluxmovies`, unknown headers, and incorrect
+log entry counts are rejected. This milestone does not add a custom-format plugin
+interface.
+
+`VolumeLayout(Nx, Ny, Nz)` exposes `shape`, `samples_per_frame`, `frame_bytes`,
+`public_shape`, and `frame_count(size_bytes)`. Each frame has `Nx*Ny*Nz` signed
+int16 samples and occupies `Nx*Ny*Nz*2` bytes. Disk order is x fastest, then y,
+then z, then frame. Zero-based sample `(f,x,y,z)` is at:
+
+```text
+byte offset = 2 * (f*Nx*Ny*Nz + x + Nx*(y + Ny*z))
+```
+
+The generic reader returns an owning, Fortran-contiguous float64 array of shape
+`(Nx, Ny, Nz)` for `Nz > 1`, and `(Nx, Ny)` for `Nz == 1`. Only the z singleton is
+removed; x/y singleton axes remain. Byte order is always explicit. Quantization
+and full-log validation are shared with the old Bx API. Coordinates and physical
+normalizations are not inferred.
+
+The compatibility functions/classes `read_bx_frame`, `BxSegment`, and `BxSeries`
+retain their signatures and 2D-only guard. They wrap/subclass the generic code,
+not a second decoder or timeline implementation. Use the generic movie API to
+exercise synthetic volumetric data. For unchanged on-disk contracts, producer
+hardware has no effect on reader selection.
 
 ## Read one Bx frame
 
@@ -276,10 +341,12 @@ The segment API reads absolute times directly from stdout, including for restart
 - `index.py`: filename parsing and filesystem discovery.
 - `parameters.py`: parameter text parsing and simple metadata derivations.
 - `case.py`: coordination, parameter-file selection, and printed summaries.
-- `bx.py`: bounded single-frame Bx reading, 18-entry log validation, and decoding.
+- `format.py`: explicit storage schema, configuration restrictions, and volume layout.
+- `movie.py`: one generic bounded decoder, log selection, and inverse quantization.
+- `bx.py`: compatibility wrappers for the original 2D Bx API.
 - `times.py`: actual stdout event parsing and time-metadata validation.
-- `segment.py`: one Bx segment, absolute-time lookup, and delegated one-frame reads.
-- `series.py`: physically ordered global Bx timeline and boundary validation.
+- `segment.py`: generic movie segment/time lookup and Bx compatibility subclass.
+- `series.py`: generic variable timeline/boundary validation and Bx compatibility subclass.
 
 The neighboring `upstream/` and `legacy/` trees are read-only references and are
 not runtime dependencies. Naming/semantics were checked against
@@ -424,3 +491,40 @@ missing/invalid stdout, gaps, shorter-than-cadence boundaries, missing cadence,
 floating-point tolerance, small spacings, and exactly-one-frame delegation.
 All changes are inside `kglobal-analysis/`; no xarray, Dask, plotting, particle
 reading, or other-variable support was added.
+
+## Milestone 5 validation results
+
+All **80 tests passed, with no skips**, using Python 3.12.14 and NumPy 2.3.5.
+The original 65 tests are unchanged, including independent real Bx values and
+bounded reads for 005/006. New tests cover all 18 schema mappings and distinct
+file/log selection, generic timelines and delegation, rejected layouts/variables,
+and a two-frame 3×2×2 volume. Fixed voxels verify x-fastest ordering and 24-byte
+frame offsets, beyond aggregate statistics. This is synthetic 3D validation only.
+
+Before relying on `movie.jihpar.004`, file inspection established:
+
+| Property | Observed value |
+|---|---:|
+| Exact binary size | 1,342,177,280 bytes |
+| Global shape | 8192 × 4096 × 1 |
+| Frame size | 67,108,864 bytes |
+| Complete frames / remainder | 20 / 0 bytes |
+| Log entries | 360 (18 per frame) |
+| Actual stdout movie events | 20 |
+| First / last time | 4.0499998976883944 / 4.9999998736893758 |
+| jihpar log index | 17 |
+
+Real jihpar frames 0 and 19 decode successfully; time-based reads at 4.05 and
+5.00 match direct index reads element-for-element. Each read is instrumented to
+verify exactly one 64 MiB binary read, the correct filename, and exact start/end
+offsets. Independent two-byte seeks at five fixed grid points check the values
+against log entry 17. Reconstructed ranges are [-0.356986, 0.479592] and
+[-0.486011, 0.508915], respectively. Real Bx 004 frames 0/19 also match between
+compatibility and generic calls through the same decoder.
+
+`test_movie_real.py` creates temporary read-only symlinks inside `tests/` to
+004's Bx/jihpar/log/stdout files in `hcs_large_multi` and the parameter file in
+`hcs_large_005`. It uses the same fixture-location environment overrides as the
+older real tests. Temporary views are removed. No reference or validation-data
+files were modified, and no dependency was added. Future real 3D output still
+requires validation, but does not require a new case/segment/time abstraction.

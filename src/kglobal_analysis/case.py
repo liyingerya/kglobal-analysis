@@ -9,8 +9,8 @@ from .parameters import Parameters, read_parameters
 
 if TYPE_CHECKING:
     import numpy as np
-    from .segment import BxSegment
-    from .series import BxSeries
+    from .segment import BxSegment, MovieSegment
+    from .series import BxSeries, MovieSeries
 
 
 class KGlobalCase:
@@ -48,6 +48,35 @@ class KGlobalCase:
     @property
     def suffixes(self) -> tuple[str, ...]:
         return self.index.suffixes
+
+    def movie_frame_count(self, variable: str, segment: str) -> int:
+        """Count complete volume frames using file size, without reading samples."""
+        from .movie import movie_frame_count
+
+        return movie_frame_count(self, variable, segment)
+
+    def read_movie_frame(self, variable: str, segment: str, frame_index: int,
+                         *, byteorder: str) -> "np.ndarray":
+        """Read one float64 frame, (Nx, Ny) for Nz=1, else (Nx, Ny, Nz).
+
+        Variable is a validated legacy storage name. Axes are in Fortran order;
+        frame indices are zero-based and byteorder must be explicit.
+        """
+        from .movie import read_movie_frame
+
+        return read_movie_frame(self, variable, segment, frame_index, byteorder=byteorder)
+
+    def movie_segment(self, variable: str, suffix: str, *, byteorder: str) -> "MovieSegment":
+        """Access a supported variable's segment with stdout-based times."""
+        from .segment import MovieSegment
+
+        return MovieSegment(self, variable, suffix, byteorder=byteorder)
+
+    def movie(self, variable: str, *, byteorder: str) -> "MovieSeries":
+        """Build a lazy global sequence for one supported storage variable."""
+        from .series import MovieSeries
+
+        return MovieSeries(self, variable, byteorder=byteorder)
 
     def bx_frame_count(self, segment: str) -> int:
         """Count complete 2D double-byte Bx frames using file size only."""
