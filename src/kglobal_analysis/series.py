@@ -8,6 +8,7 @@ from .times import TimeMetadataError, validate_movie_times
 
 if TYPE_CHECKING:
     import numpy as np
+    import xarray as xr
     from .case import KGlobalCase
 
 
@@ -96,6 +97,25 @@ class MovieSeries:
         """Read only the located segment's one local frame via MovieSegment."""
         suffix, index = self.locate_time(time)
         return self._segments[suffix].read_frame(index)
+
+    def read_frame_xarray(self, global_frame_index: int) -> "xr.DataArray":
+        """Materialize one frame indexed in validated physical-time order.
+
+        The result has a scalar time coordinate, not a time dimension. No
+        other frames are read and no physical spatial coordinates are inferred.
+        """
+        from .movie import _frame_index
+
+        global_frame_index = _frame_index(global_frame_index, self.frame_count)
+        suffix, local_index = self._locations[global_frame_index]
+        frame = self._segments[suffix].read_frame_xarray(local_index)
+        frame.attrs["global_frame_index"] = global_frame_index
+        return frame
+
+    def read_time_xarray(self, time: float) -> "xr.DataArray":
+        """Materialize one exact-time match using the existing lookup tolerance."""
+        location = self.locate_time(time)
+        return self.read_frame_xarray(self._locations.index(location))
 
 
 class BxSeries(MovieSeries):

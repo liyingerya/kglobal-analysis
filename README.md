@@ -1,12 +1,14 @@
 # kglobal-analysis
 
-Milestones 1–5: case discovery, parameter metadata, and lazy time-aware movie
-sequences using the standard 18-variable double-byte format. Requires Python
-3.10 or later and NumPy >=1.23 for decoding.
+Milestones 1–6: case discovery, parameter metadata, lazy time-aware movie
+sequences, and xarray labels for one materialized frame. The format remains the
+standard 18-variable double-byte schema. Requires Python >=3.10, NumPy >=1.23,
+and xarray >=2024.7.0.
 
 Case construction and `inspect()` read only parameter text. Explicit frame reads
 load one bounded frame; timeline construction reads sizes and stdout metadata,
-not binary samples. All case access is read-only. No xarray, Dask, four-byte,
+not binary samples. All case access is read-only. No full time-series xarray,
+Dask, four-byte,
 particle/checkpoint readers, plotting, or physics analysis is provided.
 
 The decoder supports a dimension-aware volume layout. **Synthetic Nz > 1 layouts
@@ -34,8 +36,9 @@ PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -v
 ## Use
 
 From this project directory, install with `python -m pip install -e .`, or use
-`PYTHONPATH=src python` with NumPy already available. The metadata-only APIs
-remain usable without importing NumPy.
+`PYTHONPATH=src python` with the project dependencies already available. The
+metadata-only APIs do not import NumPy or xarray; NumPy readers do not import
+xarray. The new methods import xarray only when called.
 
 ```python
 from kglobal_analysis import KGlobalCase
@@ -117,6 +120,63 @@ retain their signatures and 2D-only guard. They wrap/subclass the generic code,
 not a second decoder or timeline implementation. Use the generic movie API to
 exercise synthetic volumetric data. For unchanged on-disk contracts, producer
 hardware has no effect on reader selection.
+
+## One materialized xarray frame (Milestone 6)
+
+```python
+series = case.movie("bx", byteorder="little")
+da = series.read_time_xarray(6.05)
+# Global index uses physical-time ordering, never suffix spelling:
+da = series.read_frame_xarray(20)  # 006/frame0 for the 005+006 fixture
+print(da.name, da.dims, da.shape)  # bx, ('x', 'y'), (8192, 4096)
+print(da.coords["time"].item())   # actual stdout time, not the rounded request
+print(da.attrs["source_segment"], da.attrs["local_frame_index"])
+value = da.isel(x=100, y=50)      # spatial selection by integer index
+
+jihpar = case.movie("jihpar", byteorder="little")
+da = jihpar.read_time_xarray(5.00)
+
+segment = case.movie_segment("jihpar", "004", byteorder="little")
+da = segment.read_frame_xarray(19)  # local, not global, frame index
+# segment.read_time_xarray(5.00) is also available.
+```
+
+Each call makes exactly one existing NumPy frame read and wraps that materialized
+array in an [xarray.DataArray](https://docs.xarray.dev/en/stable/generated/xarray.DataArray.html).
+The wrapper does not concatenate or cache other frames, copy the NumPy payload,
+or implement another decoder. Existing `read_time()`/`read_frame()` methods
+continue to return NumPy arrays. `BxSeries` and `BxSegment` inherit these thin
+wrappers while retaining their existing APIs and 2D restriction.
+
+For `Nz == 1`, dimensions are `("x", "y")`; for `Nz > 1` they are
+`("x", "y", "z")`. x/y singleton axes are retained. **These are axis labels,
+not physical spatial coordinates.** There are no x/y/z coordinate arrays,
+units, assumed origins, or cell-center/node/staggering claims. Use `.isel()`;
+physical-space `.sel(x=..., y=...)` is not part of this contract.
+
+The sole coordinate is scalar `time`, taken from validated stdout. It is not a
+time dimension or a global `.sel(time=...)` interface. Time requests retain the
+existing equality tolerance and reject missing times without nearest-neighbor
+fallback or interpolation. Even an index-based xarray read requires valid stdout
+to attach a trustworthy timestamp. Missing/invalid time metadata raises
+`TimeMetadataError` before reading samples; ordinary segment NumPy index reads
+remain available without stdout.
+
+Attrs are restricted to known storage metadata: `storage_name`, `movie_header`,
+`encoding="double_byte"`, `source_segment`, `local_frame_index`, and
+`storage_order`. Series results also include `global_frame_index`. Encoding here
+describes the source file; decoded data remains float64. Storage names are not
+canonical physics/species names. Local/global indices are zero-based;
+negative or out-of-bounds indices raise `IndexError`, and noninteger/bool indices
+raise `TypeError`.
+
+The new direct dependency is `xarray>=2024.7.0`; the declared minimum supports
+Python 3.10 ([release metadata](https://pypi.org/project/xarray/2024.7.0/)). Its
+required transitive dependencies are resolved by pip; no optional parallel extras
+or Dask are requested. This milestone intentionally has no full-series
+`to_xarray()`, chunking, or lazy multi-time DataArray. Those need a separate
+Milestone 7 loading design. Real validation remains 2D; only synthetic volumes
+establish the xarray wrapper's 3D axis ordering.
 
 ## Read one Bx frame
 
@@ -345,8 +405,8 @@ The segment API reads absolute times directly from stdout, including for restart
 - `movie.py`: one generic bounded decoder, log selection, and inverse quantization.
 - `bx.py`: compatibility wrappers for the original 2D Bx API.
 - `times.py`: actual stdout event parsing and time-metadata validation.
-- `segment.py`: generic movie segment/time lookup and Bx compatibility subclass.
-- `series.py`: generic variable timeline/boundary validation and Bx compatibility subclass.
+- `segment.py`: generic segment/time lookup, one-frame xarray wrapping, and Bx compatibility subclass.
+- `series.py`: generic timeline/boundary validation, global frame mapping for xarray, and Bx compatibility subclass.
 
 The neighboring `upstream/` and `legacy/` trees are read-only references and are
 not runtime dependencies. Naming/semantics were checked against
@@ -528,3 +588,39 @@ compatibility and generic calls through the same decoder.
 older real tests. Temporary views are removed. No reference or validation-data
 files were modified, and no dependency was added. Future real 3D output still
 requires validation, but does not require a new case/segment/time abstraction.
+
+## Milestone 6 validation results
+
+All **95 tests passed with no skips**: the existing 82 tests plus 11 synthetic
+and two real-data xarray tests. Validation used Python 3.11.13, NumPy 2.4.6,
+and the declared minimum xarray 2024.7.0 in a project-local `.venv`.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python \
+  -m unittest discover -s tests -v
+```
+
+| Real request | Source | Global index | Scalar stdout time |
+|---|---|---:|---:|
+| Bx `read_time_xarray(6.05)` | 006, local frame 0 | 20 in the 005/006 sequence | 6.049999847164145 |
+| jihpar `read_time_xarray(5.00)` | 004, local frame 19 | 19 | 4.999999873689376 |
+
+Both results are named `DataArray` objects with dimensions `("x", "y")`, shape
+`(8192, 4096)`, and float64 NumPy data. They match direct NumPy reads
+element-for-element, including `.isel(x=100, y=50)`. Instrumentation verifies
+one bounded 67,108,864-byte (64 MiB) binary read per xarray request, the correct
+file, and exact offsets. Only temporary links inside `tests/` are created; the
+real fixtures remain read-only.
+
+Synthetic tests cover all 18 storage-variable names, global ordering opposite
+to suffix order, segment-boundary mapping, local/global bounds, stored versus
+rounded timestamps, no nearest-time fallback, missing stdout, inherited Bx
+wrappers, absence of spatial/physics metadata, and sharing the decoded NumPy
+payload without copying. The two-frame 3×2×2 fixture checks fixed voxels and a
+nonzero local-frame byte offset; its dimensions are `("x", "y", "z")`. Real
+3D KGlobal output remains unvalidated.
+
+Only xarray was added as a direct dependency; its required transitive dependencies
+were installed in the isolated environment without parallel extras or Dask.
+Existing NumPy APIs and the decoder are unchanged. No full-series xarray,
+physical coordinates, simulation changes, or Milestone 7 work was added.

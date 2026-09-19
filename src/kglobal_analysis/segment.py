@@ -8,6 +8,7 @@ from .times import TimeMetadataError, read_movie_times, validate_movie_times
 
 if TYPE_CHECKING:
     import numpy as np
+    import xarray as xr
     from .case import KGlobalCase
 
 
@@ -81,6 +82,39 @@ class MovieSegment:
     def read_time(self, time: float) -> "np.ndarray":
         """Read the frame matching a stored physical time; no interpolation."""
         return self.read_frame(self.frame_index_at_time(time))
+
+    def read_frame_xarray(self, frame_index: int) -> "xr.DataArray":
+        """Materialize one local frame with scalar stdout time and axis labels.
+
+        x/y/z have no coordinate values or implied units/staggering. Use isel
+        for spatial selection. Valid time metadata is required even for an
+        index-based xarray read; the NumPy read_frame API remains independent.
+        """
+        import xarray as xr
+        from .movie import _frame_index
+
+        frame_index = _frame_index(frame_index, self.frame_count)
+        time = self.times[frame_index]
+        schema = movie_format(self._case.parameters)
+        values = self.read_frame(frame_index)
+        return xr.DataArray(
+            values,
+            dims=("x", "y", "z")[:values.ndim],
+            coords={"time": time},
+            name=self.variable.storage_name,
+            attrs={
+                "storage_name": self.variable.storage_name,
+                "movie_header": schema.header,
+                "encoding": "double_byte",
+                "source_segment": self.suffix,
+                "local_frame_index": frame_index,
+                "storage_order": "Fortran: x fastest, then y, then z, then frame",
+            },
+        )
+
+    def read_time_xarray(self, time: float) -> "xr.DataArray":
+        """Wrap exactly one matching frame; time coordinate is the stored time."""
+        return self.read_frame_xarray(self.frame_index_at_time(time))
 
 
 class BxSegment(MovieSegment):
