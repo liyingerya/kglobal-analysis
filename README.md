@@ -11,7 +11,7 @@ Case construction and `inspect()` read only parameter text. Explicit frame reads
 load one bounded frame; timeline construction reads sizes and stdout metadata,
 not binary samples. All case access is read-only. Each lazy time chunk contains
 one whole spatial frame. No spatial chunking, region reader, four-byte reader,
-particle/checkpoint reader, plotting, or physics analysis is provided.
+particle/checkpoint reader or derived-physics analysis is provided. Optional visualization is described below.
 
 The decoder supports a dimension-aware volume layout. **Synthetic Nz > 1 layouts
 are tested; real-data validation remains 2D.** This does not validate real 3D
@@ -1092,3 +1092,166 @@ serialization, region bounds including z when supplied, and reconstruction and
 normalization provenance. No units, time coordinate, or simulation-dimensionality
 claim is inferred. Historical compatibility does not certify particle-level
 numerical correctness.
+
+## Optional scientific visualization
+
+Install rendering support separately:
+
+```sh
+pip install -e '.[plot]'
+```
+
+Core imports/readers do not require Matplotlib. Visualization functions import it
+only when rendering is requested. Selection/composition lives in `analysis`,
+rendering in `plotting`, and bounded event iteration/export in `animation`.
+No renderer parses simulation files or computes a lazy movie implicitly.
+
+```python
+from kglobal_analysis import KGlobalCase
+from kglobal_analysis.analysis import index_cut, spacetime
+from kglobal_analysis.plotting import plot_scalar_map, plot_spacetime
+
+case = KGlobalCase('/path/to/case')
+series = case.movie('bx', byteorder='little')
+frame = series.read_time_xarray(series.times[0])
+result = plot_scalar_map(frame, horizontal='x', vertical='y')
+# result.figure, .axes, .artist, .colorbar, .contours, .metadata
+
+cut = index_cut(frame, line_axis='x', fixed_indices={'y': 0})
+# y=0 is an explicit index choice, not a presumed current-sheet center.
+st = spacetime(series, line_axis='x', fixed_indices={'y': 0},
+               times=[series.times[0], series.times[-1]])
+view = plot_spacetime(st, line_axis='x')
+```
+
+Maps require two explicitly named display dimensions. Logical `(x, y)` data is
+transposed **for presentation only** to rows=y, columns=x. No storage data is
+modified. Unsliced volumes and unresolved lazy map inputs are rejected. Spatial
+axes without coordinates are labelled `x index`, `y index`, etc. No coordinates
+are invented from grid size or domain length. Existing dimension coordinates
+or `coordinates={'x': x_values, 'y': y_values}` must be finite, one-dimensional,
+strictly monotonic and length-matched. They are display centers; inferred edges
+are presentation geometry, not scientific integration boundaries. Units appear
+only if explicitly supplied in coordinate attrs or label overrides.
+
+Map options include `normalization='linear'`, `'log'`, or `'signed'`, `vmin`,
+`vmax`, `cmap`, `ax`, `title`, `xlabel`, `ylabel`, `colorbar_label`, and `aspect`.
+Signed normalization centers on zero; explicit signed limits must straddle zero.
+Constant fields receive a nondegenerate display range. Log display masks
+nonpositive values only in detached display data and raises a clear error if
+no positive finite value remains. Invalid values are masked, not repaired.
+Caller-supplied axes support ordinary Matplotlib layouts. The caller owns and
+closes figures returned by static renderers.
+
+`contours=other_frame` overlays a **supplied scalar contour field**, with
+`contour_levels` specifying levels (default: Matplotlib chooses about seven).
+Dimension order, shape, spatial coordinates and units must match; scalar times
+must agree when both inputs provide them. There is no interpolation/alignment.
+An explicit coordinate override applies to both layers. These are not
+implicitly magnetic flux contours or field lines; no psi reconstruction exists.
+
+`index_cut` requires an explicit fixed index for every other dimension, retains
+scalar time and provenance, and rejects negative/out-of-range indices. It can
+select a line from a future 3D array by fixing two axes. Spacetime output has
+`('time', line_axis)` dimensions, preserves actual times, and uses automatic
+presentation aspect rather than equal x/time scales. Requested events use the
+movie equality tolerance `min(1e-6, minimum event spacing/1000)`, with no nearest
+fallback. Subsets are sorted in actual-time order; duplicates are rejected.
+
+### Honest reduced-product display
+
+```python
+from kglobal_analysis.plotting import (
+    plot_energy_spectrum, plot_energy_overlay, plot_distribution,
+)
+
+# reduced_case is a KGlobalCase pointing to the appropriate reduced-text staging.
+e = reduced_case.energy_spectrum('electron', checkpoint='016')
+i = reduced_case.energy_spectrum('ion', checkpoint='016')
+lines = plot_energy_overlay({'electron': e, 'ion': i}, xscale='log', yscale='log')
+vv = reduced_case.parallel_perpendicular_velocity_distribution('electron', checkpoint='016')
+bins = plot_distribution(vv, coordinate_mode='centers', normalization='log')
+```
+
+M11 plots use the reconstructed energy centers and 200 active values, excluding
+the retained sentinel. The default ordinate is **legacy energy estimator**, not
+published `F(W)` or `dN/dW`. Linear/log axes and user labels are presentation
+choices; the helper never renormalizes or fits values. Repeated calls with the
+same `ax`, or a labelled mapping to `plot_energy_overlay`, support comparisons
+without inferring run parameters from directory names.
+
+M12 plots say **normalized bin mass**, not density or `f(v)`. All zero and
+endpoint bins remain active. `coordinate_mode='index'` (default) displays
+producer integer indices; `'centers'` displays species-specific nominal
+coordinates. Region metadata including z bounds, species, storage identity,
+position axis and checkpoint remain in `PlotResult.metadata`. Display cell
+boundaries must not be used for integration or density conversion.
+
+Detached coordinate changes stay ordinary explicit arithmetic:
+
+```python
+import numpy as np
+energy_display = np.array(e.centers, copy=True) / 2**N  # N explicitly supplied
+provenance = {'operation': 'energy_center / 2**N', 'N': N, 'y': 'unchanged'}
+# Plot energy_display against e.values with an explicit transformed-axis label.
+# No automatic ordinate rescaling or Jacobian is implied.
+```
+
+### Bounded evolution and PNG export
+
+```python
+from kglobal_analysis.animation import iter_movie_frames, render_frame_sequence
+
+for event in iter_movie_frames(series, times=[series.times[0], series.times[-1]]):
+    # event.time, event.source_index, event.ordinal, event.data, event.contours
+    # Consume and release the frame; do not collect all events into a list.
+    print(event.time)
+
+manifest = render_frame_sequence(
+    series, '/path/to/new/frames', horizontal='x', vertical='y',
+    stride=2, color_policy='global', normalization='linear',
+)
+# frame_000000.png, frame_000001.png, ... in physical-time order.
+# Each record has path, actual time, source_index, vmin, vmax.
+```
+
+Color policies are explicit: `'fixed'` requires `vmin` and `vmax`; `'global'`
+scans selected frames in a bounded first pass and renders in a second pass;
+`'per_frame'` deliberately autoscales each frame. No per-frame autoscale is
+silently selected. Global log limits use positive finite values only. An empty
+valid selection raises an error; a later all-masked frame also fails clearly.
+Global limits are for the selected rendered data, not guessed from movie logs.
+
+Use `case.movie_dataset([...], byteorder='little')` for strict multi-variable
+alignment, then pass `variable='bx', contour_variable='supplied_scalar_name'`
+when iterating/exporting an already aligned Dataset. Derived contour variables
+must be supplied by the caller. Helpers do not realign an externally constructed
+Dataset or certify its upstream alignment. Both arrays are computed together at
+one event. Slice volumes explicitly before export; scalar slice coordinates
+remain on the yielded frames.
+
+**An 8192 × 4096 float64 frame is 256 MiB. Do not call
+`full_series.compute()` for long movies.** Spacetime computes one selected event
+at a time and retains only detached lines. Movie tasks still decode whole frames
+even for a line cut. Export similarly retains one event plus display/overlay
+buffers, creates an Agg figure directly, and releases it before advancing.
+Time chunks larger than one are rejected by bounded helpers; use the reader's
+one-frame layout. No unbounded prefetch is used. A caller that collects yielded
+frames can defeat the memory bound. Static multi-panel figures retain their
+artists' arrays: two large panels alone may retain more than 512 MiB.
+
+PNG export works without a GUI and does not switch the global notebook backend.
+Existing target filenames are rejected unless `overwrite=True`; unrelated files
+are never removed. A failure partway through export can leave earlier completed
+PNGs. Output records are compact, and titles show actual stored times. Playback
+rate/encoding is not a physical time coordinate. MP4/GIF support is deferred;
+no codec dependency is required.
+
+See `examples/visualization.py` for synthetic index maps, exact-time panels,
+cuts, spacetime, supplied contours and PNG export, with optional reduced-file
+examples. No publication-specific layout engine or CaseCollection is provided.
+Temperature, firehose, particle-energy, flux, published-spectrum conversions and
+fitting remain outside this layer. A two-dimensional rendered map describes the
+selected slice, not the source simulation's permanent dimensionality. The same
+inspectable data operations and rendering results can serve scripts, notebooks,
+and a future UI.
