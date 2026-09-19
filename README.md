@@ -1,15 +1,15 @@
 # kglobal-analysis
 
-Milestones 1–6: case discovery, parameter metadata, lazy time-aware movie
-sequences, and xarray labels for one materialized frame. The format remains the
+Milestones 1–7: case discovery, parameter metadata, time-lazy movie sequences,
+and eager one-frame or Dask-backed time-series xarray access. The format remains the
 standard 18-variable double-byte schema. Requires Python >=3.10, NumPy >=1.23,
-and xarray >=2024.7.0.
+xarray >=2024.7.0, and dask[array] >=2024.7.0.
 
 Case construction and `inspect()` read only parameter text. Explicit frame reads
 load one bounded frame; timeline construction reads sizes and stdout metadata,
-not binary samples. All case access is read-only. No full time-series xarray,
-Dask, four-byte,
-particle/checkpoint readers, plotting, or physics analysis is provided.
+not binary samples. All case access is read-only. Each lazy time chunk contains
+one whole spatial frame. No spatial chunking, region reader, four-byte reader,
+particle/checkpoint reader, plotting, or physics analysis is provided.
 
 The decoder supports a dimension-aware volume layout. **Synthetic Nz > 1 layouts
 are tested; real-data validation remains 2D.** This does not validate real 3D
@@ -37,8 +37,8 @@ PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -v
 
 From this project directory, install with `python -m pip install -e .`, or use
 `PYTHONPATH=src python` with the project dependencies already available. The
-metadata-only APIs do not import NumPy or xarray; NumPy readers do not import
-xarray. The new methods import xarray only when called.
+metadata-only APIs do not import NumPy, xarray, or Dask. NumPy readers do not
+import xarray/Dask; xarray and graph-building imports happen when requested.
 
 ```python
 from kglobal_analysis import KGlobalCase
@@ -173,10 +173,99 @@ raise `TypeError`.
 The new direct dependency is `xarray>=2024.7.0`; the declared minimum supports
 Python 3.10 ([release metadata](https://pypi.org/project/xarray/2024.7.0/)). Its
 required transitive dependencies are resolved by pip; no optional parallel extras
-or Dask are requested. This milestone intentionally has no full-series
-`to_xarray()`, chunking, or lazy multi-time DataArray. Those need a separate
-Milestone 7 loading design. Real validation remains 2D; only synthetic volumes
-establish the xarray wrapper's 3D axis ordering.
+or Dask were requested in Milestone 6. Milestone 7 adds the time-lazy
+`to_xarray()` interface below while preserving these eager methods. Real
+validation remains 2D; only synthetic volumes establish 3D axis ordering.
+
+## Time-lazy xarray series (Milestone 7)
+
+```python
+series = case.movie("bx", byteorder="little")
+da = series.to_xarray()             # no movie-sample reads
+print(da.dims, da.shape, da.chunks)  # metadata only
+
+selected = da.isel(time=40)         # still lazy; for complete 004+005+006
+print(selected.source_segment.item(), selected.local_frame_index.item())
+frame = selected.compute()         # reads just this one whole frame
+# selected.load() or selected.values also trigger this selected frame's read.
+```
+
+`MovieSeries.to_xarray()` constructs one delayed call to the existing segment
+reader per global frame, wraps each with `dask.array.from_delayed`, and stacks
+those tasks along time. It never invokes the decoder to infer dtype or shape.
+The [Dask from_delayed API](https://docs.dask.org/en/stable/generated/dask.array.from_delayed.html)
+represents each delayed result as one array chunk. Construction and ordinary
+indexing perform zero sample reads. Computing selected times executes only the
+needed frame tasks. Existing NumPy and eager one-frame xarray APIs are unchanged;
+`case.bx(...).to_xarray()` inherits the same generic adapter.
+
+For `Nz == 1`, dimensions are `("time", "x", "y")` and chunks are
+`((1, ...), (Nx,), (Ny,))`. Volumes use `("time", "x", "y", "z")` and
+`((1, ...), (Nx,), (Ny,), (Nz,))`. There is no spatial chunking: selecting a
+single spatial point still reads/decodes its whole source frame. Graph planning
+lives in `lazy.py`, separate from the binary reader. A future region loader can
+change task granularity without changing the schema, variable names, or timeline.
+Whole-frame tasks are a current implementation policy, not a permanent semantic
+constraint.
+
+Time and provenance are small eager coordinates along time:
+
+- `time`: actual validated stdout timestamps in physical order.
+- `source_segment`: original suffix strings, including zero padding.
+- `local_frame_index`: zero-based index in the source segment.
+- `global_frame_index`: zero-based index in the physical timeline.
+
+Series attrs contain only `storage_name`, `movie_header`, `encoding`, and
+`storage_order`. Varying provenance is never stored as a single series attr.
+No x/y/z coordinates, units, species identity, staggering, or canonical physics
+names are invented. Field values remain float64 after decoding.
+
+### Exact labels versus tolerant KGlobal lookup
+
+Native xarray/pandas label lookup does **not** inherit `MovieSeries.locate_time()`
+tolerance. Stored times are not rounded to nominal cadence. Use the exact stored
+label when selecting through xarray:
+
+```python
+stored_time = series.times[40]
+selected = da.sel(time=stored_time)  # lazy, exact stored label
+frame = selected.compute()
+```
+
+For example, real `6.049999847164145` is retained; `.sel(time=6.05)` raises
+`KeyError`. For a human-entered label, the existing eager
+`series.read_time_xarray(6.05)` remains available. If using native xarray nearest
+selection, explicitly bound it by the existing global time tolerance:
+
+```python
+spacing = min((b-a for a, b in zip(series.times, series.times[1:])),
+              default=float("inf"))
+tolerance = min(1e-6, spacing / 1000)
+selected = da.sel(time=6.05, method="nearest", tolerance=tolerance)
+```
+
+Never omit that tolerance for approximate selection. Midpoints and absent times
+outside the bound must fail. No interpolation, timestamp canonicalization, or
+unrestricted nearest-time convenience API is added by this package. The returned
+object is an ordinary DataArray, so callers remain responsible for any native
+xarray operations they choose to invoke.
+
+### Materialization and memory
+
+Select times **before** `.compute()`, `.load()`, `.values`, or NumPy conversion.
+A whole 60-frame Bx series represents 15 GiB of decoded float64 values; constructing
+its graph does not allocate that payload, but computing the full series would.
+Each selected real frame reads 64 MiB of int16 samples and decodes to 256 MiB.
+Computing several selected frames can execute them concurrently and requires
+memory for those frames. `compute(scheduler="synchronous")` is available for
+serial task execution. Separate computations can reread frames; this adapter
+adds no data cache. Keep source files unchanged while using a case/series graph,
+and rebuild snapshots after files change.
+
+The only new direct dependency is `dask[array]>=2024.7.0`, whose minimum release
+supports Python 3.10 ([release metadata](https://pypi.org/project/dask/2024.7.0/)).
+The existing `xarray>=2024.7.0` requirement is unchanged. No distributed scheduler
+package or unrelated optional extras are requested.
 
 ## Read one Bx frame
 
@@ -407,6 +496,7 @@ The segment API reads absolute times directly from stdout, including for restart
 - `times.py`: actual stdout event parsing and time-metadata validation.
 - `segment.py`: generic segment/time lookup, one-frame xarray wrapping, and Bx compatibility subclass.
 - `series.py`: generic timeline/boundary validation, global frame mapping for xarray, and Bx compatibility subclass.
+- `lazy.py`: time-lazy Dask/xarray graph adapter, separate from binary decoding.
 
 The neighboring `upstream/` and `legacy/` trees are read-only references and are
 not runtime dependencies. Naming/semantics were checked against
@@ -624,3 +714,49 @@ Only xarray was added as a direct dependency; its required transitive dependenci
 were installed in the isolated environment without parallel extras or Dask.
 Existing NumPy APIs and the decoder are unchanged. No full-series xarray,
 physical coordinates, simulation changes, or Milestone 7 work was added.
+
+## Milestone 7 validation results
+
+All **106 tests passed with no skips**: the unchanged 95-test suite plus nine
+synthetic lazy tests and two real-data lazy tests. Validation used Python
+3.11.13, NumPy 2.4.6, xarray 2024.7.0, and Dask 2024.7.0 in `.venv`, testing
+both declared xarray/Dask minimum versions together. No `distributed` package
+was installed.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python \
+  -m unittest discover -s tests -v
+```
+
+Real Bx 004/005/006 was assembled using temporary links, without copying or
+changing source data. The resulting lazy array has:
+
+- 60 frames, dimensions `("time", "x", "y")`, shape `(60, 8192, 4096)`.
+- Chunks `((1,) * 60, (8192,), (4096,))`.
+- Actual stdout time coordinates and per-time source/local/global indices.
+- Zero sample reads during series/array construction and time selection.
+
+The test derives the index for `locate_time(6.05)` from the constructed timeline
+and verifies it is global frame 40, segment `006`, local frame 0. Computing only
+that selected frame invokes one bounded 67,108,864-byte read and matches the
+existing eager `read_time_xarray(6.05)` values element-for-element. Native exact
+`.sel(time=6.05)` fails because the stored label is `6.049999847164145`; selecting
+that actual label works. The full 60-frame payload was never computed.
+
+Real jihpar 004 exposes lazy shape `(20, 8192, 4096)` and whole-frame time chunks.
+Construction/selection reads zero samples. Computing only frame 19 reads one
+64 MiB raw frame and matches the direct generic NumPy decoder exactly.
+
+Synthetic tests verify zero-read construction/indexing, one-read single-time
+compute, and exactly two reads for two nonadjacent time indices across reversed
+suffix/physical ordering (`090` before `002`). They also test selected `.load()`
+and `.values`, eager provenance only, exact labels versus explicitly bounded
+nearest selection, the inherited Bx entry point, and whole-frame reads even for
+spatial-point selection. The synthetic 3×2×2 volume preserves fixed-voxel order
+with dimensions `("time", "x", "y", "z")` and chunks
+`((1,1,1,1), (3,), (2,), (2,))`; selecting one time computes one frame.
+
+Only `dask[array]>=2024.7.0` was added as a direct dependency. Existing eager
+readers, storage schema, and time lookup semantics are unchanged. Real 3D output
+remains unvalidated. No spatial chunking, region reads, new physical semantics,
+or subsequent milestone work was implemented.

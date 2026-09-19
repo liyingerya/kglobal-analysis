@@ -24,6 +24,7 @@ class MovieSeries:
         if byteorder not in ("little", "big"):
             raise ValueError("byteorder must be explicitly 'little' or 'big'")
         self.variable = movie_format(case.parameters).variable(variable)
+        self._case = case
         label = "Bx" if variable == "bx" else variable
         segments = []
         for suffix, entry in case.index.segments.items():
@@ -116,6 +117,18 @@ class MovieSeries:
         """Materialize one exact-time match using the existing lookup tolerance."""
         location = self.locate_time(time)
         return self.read_frame_xarray(self._locations.index(location))
+
+    def to_xarray(self) -> "xr.DataArray":
+        """Return a time-lazy DataArray, one whole spatial frame per chunk.
+
+        Construction and indexing read no samples. Compute only selected times
+        to limit memory. Time labels are actual stdout values; native xarray
+        selection does not inherit locate_time's floating-point tolerance.
+        Spatial axes have labels only, not physical coordinates.
+        """
+        from .lazy import series_to_xarray
+
+        return series_to_xarray(self)
 
 
 class BxSeries(MovieSeries):
