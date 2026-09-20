@@ -1,0 +1,43 @@
+name: CI
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+
+env:
+  MPLBACKEND: Agg
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[plot]"
+      - run: python -m unittest discover -s tests -v
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - run: python -m pip install build
+      - run: python -m build
+      - run: python scripts/check_release.py --wheel dist/*.whl
+      - run: python scripts/check_release.py --sdist dist/*.tar.gz
+      - name: Rebuild wheel from source distribution
+        run: python -m pip wheel dist/*.tar.gz --no-deps -w "$RUNNER_TEMP/sdist-wheel"
+      - name: Smoke test isolated wheel installation
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-env"
+          "$RUNNER_TEMP/wheel-env/bin/python" -m pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-env/bin/python" "$GITHUB_WORKSPACE/scripts/check_release.py" --installed-root "$RUNNER_TEMP/wheel-env"

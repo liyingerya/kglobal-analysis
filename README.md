@@ -1,11 +1,70 @@
 # kglobal-analysis
 
-Milestones 1–9: case discovery, parameter metadata, time-lazy movie sequences,
-eager one-frame xarray access, strictly aligned multi-variable lazy Datasets,
-and read-only movie metadata validation. Reduced energy-spectrum text products
-are also supported. The movie format remains the
-standard 18-variable double-byte schema. Requires Python >=3.10, NumPy >=1.23,
-xarray >=2024.7.0, and dask[array] >=2024.7.0.
+KGlobal Analysis is a Python package for read-only KGlobal movie analysis,
+reduced diagnostics, verified particle quantities, periodic 2D magnetic flux,
+and lazy scientific workflows. The distribution is **kglobal-analysis**; the
+Python package is **kglobal_analysis**, conventionally imported as **kga**.
+
+## Install and quick start
+
+Use Python 3.10 or later in your preferred environment; conda is not required.
+Install from a local checkout (these commands do not assume PyPI publication):
+
+```sh
+git clone https://github.com/liyingerya/kglobal-analysis.git
+cd kglobal-analysis
+python -m pip install -e .
+# Optional plotting support:
+python -m pip install -e ".[plot]"
+```
+
+An editable install makes source edits immediately visible. For a regular local
+installation use `python -m pip install .` instead. After installation you can
+import from any directory, without setting PYTHONPATH:
+
+```python
+import kglobal_analysis as kga
+print(kga.__version__)
+```
+
+Installed packages report their distribution version (currently `0.1.0`). An
+uninstalled source checkout without metadata reports `0+unknown`, not a release.
+
+Start with a semantic quantity rather than a historical storage filename:
+
+```python
+import kglobal_analysis as kga
+from kglobal_analysis.plotting import plot_scalar_map
+
+case = kga.KGlobalCase("/path/to/run")
+workflow = kga.particle_map_series(
+    case, "number_density", species="ion", include_flux=True,
+    byteorder="little",
+)
+frame = workflow.isel(time=0).compute()  # Only the selected event is read.
+view = plot_scalar_map(frame.field, horizontal="x", vertical="y",
+                       contours=frame.psi)
+```
+
+This map requires the corresponding matched movies and verified periodic 2D
+`initrecon` geometry. See [Scientific workflows](#scientific-workflows) for the
+quantity catalog and geometry-independent series. Plotting is optional; core
+import does not import Matplotlib or inspect a case.
+
+### Scientific boundaries
+
+Particle and fluid populations are distinct. Exact parallel/total thermal
+quantities and firehose require nonrelativistic semantics; exact relativistic
+thermal recovery is unavailable. Verified geometry/psi is periodic 2D
+`initrecon`; synthetic volume decoding does not validate real 3D producers.
+Mean-energy reconstruction, published dN/dW conversion and fitting are unavailable.
+Exact paper-panel reproduction requires the exact data and scientific provenance.
+
+## Reader overview
+
+The movie format remains the standard 18-variable double-byte schema. Runtime
+requirements are NumPy >=1.23, xarray >=2024.7.0 and dask[array] >=2024.7.0;
+`plot` adds Matplotlib >=3.6.
 
 Case construction and `inspect()` read only parameter text. Explicit frame reads
 load one bounded frame; timeline construction reads sizes and stdout metadata,
@@ -21,14 +80,14 @@ KGlobal simulations. Existing Bx APIs preserve their original 2D behavior.
 
 ## Development setup
 
-Python 3.11 is recommended for development. The supported version is Python
-3.10 or later; the project has been verified on Python 3.10.8 and 3.11.13.
+Python 3.11 is recommended for development. The package requires Python
+3.10 or later. Public CI is configured to test Python 3.10, 3.11, and 3.12.
 From this project directory:
 
 ```sh
 conda create -n kglobal python=3.11
 conda activate kglobal
-pip install -e .
+python -m pip install -e .
 ```
 
 Run the tests in the activated environment:
@@ -39,10 +98,10 @@ PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -v
 
 ## Use
 
-From this project directory, install with `python -m pip install -e .`, or use
-`PYTHONPATH=src python` with the project dependencies already available. The
-metadata-only APIs do not import NumPy, xarray, or Dask. NumPy readers do not
-import xarray/Dask; xarray and graph-building imports happen when requested.
+After installation, these reader APIs work from any directory. Imports perform
+no case inspection or sample reads; scientific workflow modules may import the
+core scientific dependencies. Matplotlib remains optional and is loaded only
+when rendering is requested.
 
 ```python
 from kglobal_analysis import KGlobalCase
@@ -614,7 +673,7 @@ Python runtime was used without installing or modifying external dependencies:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
-  /Users/zhiyuyin/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  python \
   -m unittest discover -s tests -v
 ```
 
@@ -1100,7 +1159,7 @@ numerical correctness.
 Install rendering support separately:
 
 ```sh
-pip install -e '.[plot]'
+python -m pip install -e '.[plot]'
 ```
 
 Core imports/readers do not require Matplotlib. Visualization functions import it

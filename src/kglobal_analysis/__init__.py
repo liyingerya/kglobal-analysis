@@ -1,5 +1,13 @@
 """KGlobal metadata inspection and dimension-aware movie reconstruction."""
 
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError, version as _distribution_version
+
+try:
+    __version__ = _distribution_version("kglobal-analysis")
+except _PackageNotFoundError:
+    # Source checkout without installed distribution metadata; not a release.
+    __version__ = "0+unknown"
+
 from .case import KGlobalCase
 from .distribution import ReducedDistribution, DistributionError, DistributionMetadataError
 from .energy import EnergySpectrum, EnergySpectrumError, EnergyMetadataError
@@ -13,6 +21,7 @@ from .times import TimeMetadataError
 from .series import BxSeries, MovieSeries
 
 __all__ = [
+    "__version__",
     "ReducedDistribution", "DistributionError", "DistributionMetadataError",
     "EnergySpectrum", "EnergySpectrumError", "EnergyMetadataError", "MovieCaseReport", "MovieValidationIssue", "MovieAlignmentError", "KGlobalCase", "CaseIndex", "Segment", "parse_filename", "scan_case",
     "Parameters", "parse_parameters", "read_parameters", "BxSegment", "TimeMetadataError", "BxSeries",

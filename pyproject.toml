@@ -5,13 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kglobal-analysis"
 version = "0.1.0"
-description = "KGlobal case metadata and lazy dimension-aware movie reconstruction"
+description = "KGlobal movie analysis, reduced diagnostics, and lazy scientific workflows"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.23", "xarray>=2024.7.0", "dask[array]>=2024.7.0"]
 
 [project.optional-dependencies]
 plot = ["matplotlib>=3.6"]
+
+[project.urls]
+Repository = "https://github.com/liyingerya/kglobal-analysis"
+Issues = "https://github.com/liyingerya/kglobal-analysis/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
