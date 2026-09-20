@@ -11,7 +11,8 @@ Case construction and `inspect()` read only parameter text. Explicit frame reads
 load one bounded frame; timeline construction reads sizes and stdout metadata,
 not binary samples. All case access is read-only. Each lazy time chunk contains
 one whole spatial frame. No spatial chunking, region reader, four-byte reader,
-particle/checkpoint reader or derived-physics analysis is provided. Optional visualization is described below.
+particle/checkpoint reader is provided. Verified particle-moment derived quantities
+and optional visualization are described below.
 
 The decoder supports a dimension-aware volume layout. **Synthetic Nz > 1 layouts
 are tested; real-data validation remains 2D.** This does not validate real 3D
@@ -1255,3 +1256,192 @@ fitting remain outside this layer. A two-dimensional rendered map describes the
 selected slice, not the source simulation's permanent dimensionality. The same
 inspectable data operations and rendering results can serve scripts, notebooks,
 and a future UI.
+
+## Verified particle-moment derived quantities
+
+KGlobal distinguishes a **species** from its **population/representation**.
+For the supported current producer, `ni` is fluid-ion density storage, `nih` is
+particle-ion density storage, and `neh` is particle-electron density storage.
+Particle density is not total species density. Historical storage names remain
+provenance; scientific terminology is resolved separately from `MovieFormat`
+and binary decoding.
+
+```python
+from kglobal_analysis.derived import (
+    ParticleMomentProfile,
+    particle_number_density, raw_parallel_stress,
+    particle_perpendicular_pressure, particle_perpendicular_temperature,
+    particle_parallel_pressure, particle_parallel_temperature,
+    particle_total_temperature, firehose_parameter, validity_mask,
+)
+
+profile = case.particle_moment_profile()  # Parameter metadata only; no samples.
+ds = case.movie_dataset(['nih', 'pihperp'], byteorder='little')
+n = particle_number_density(ds, species='ion', profile=profile)
+t_perp = particle_perpendicular_temperature(ds, species='ion', profile=profile)
+valid = validity_mask(t_perp)  # Boolean DataArray, also lazy.
+```
+
+All species-specific functions take an already aligned Dataset plus explicit
+`species='electron'` or `'ion'` and `profile=...`; `firehose_parameter` takes the
+Dataset and profile and combines both particle populations. No fluid-density or
+total-density helper is provided. The frozen profile centralizes mappings:
+
+```python
+profile.storage_for('number_density', species='ion', population='particle')  # nih
+profile.storage_for('number_density', species='ion', population='fluid')     # ni
+profile.storage_for('number_density', species='electron', population='particle')  # neh
+```
+
+The profile describes the audited current unit-mass/unit-charge ion and electron
+producer. It does not assert that all future ions are protons. Future profiles
+can distinguish additional species and fluid/particle populations without
+renaming storage or changing formulas. Arbitrary multispecies storage remains
+unsupported.
+
+### Producer contract and formulas
+
+`ParticleMomentProfile.from_parameters(parameters)` and the case method require
+the supported standard double-byte header and a finite positive literal `m_e`.
+Expressions, missing mass, unsupported layouts and typed/raw metadata conflicts
+raise `DerivedSemanticsError`; there is no default electron mass of .04.
+The profile records `relativistic`, `smooth_part_mom`, `doublesmooth` and
+`testmovie`. Flags have CPP **presence** semantics: `#define relativistic 0`
+still enables the flag. Absence means disabled under the supplied complete
+parameter contract. Parsed parameters cannot certify unrecorded build overrides
+or an arbitrary historical executable; using this profile declares that the
+case belongs to this supported producer family.
+
+`testmovie` changes the meaning of `pc`, but no M14 operation reads `pc`;
+the flag is retained in provenance. Producer smoothing is recorded, never
+reapplied. Direct construction is an explicit declaration for documented
+synthetic/external data, for example
+`ParticleMomentProfile(electron_mass_ratio=.01, relativistic=False)`.
+It must not be used to relabel relativistic real data as nonrelativistic.
+
+Let n be particle number density, M the raw parallel stress, Q the scalar
+perpendicular pressure, J the signed parallel current, m the species/reference
+mass and q its signed unit charge. These roles map centrally to:
+
+| Role | Particle electron | Particle ion |
+|---|---|---|
+| n | neh | nih |
+| M | pehpar | pihpar |
+| Q | pehperp | pihperp |
+| J | jhpar = −n·mean(v_parallel) | jihpar = +n·mean(v_parallel) |
+| m, q | resolved m_e, −1 | 1, +1 |
+
+| Operation | Formula | Allowed profile |
+|---|---|---|
+| `particle_number_density` | n, without fraction/charge rescaling | Both |
+| `raw_parallel_stress` | M, uncentered p_parallel·v_parallel | Both |
+| `particle_perpendicular_pressure` | Q = deposited p_perp²/(2mγ) | Both |
+| `particle_perpendicular_temperature` | Q/n | Both |
+| `particle_parallel_pressure` | P_parallel = M − (m/q²)J²/n | Nonrelativistic only |
+| `particle_parallel_temperature` | P_parallel/n | Nonrelativistic only |
+| `particle_total_temperature` | (T_parallel + 2T_perp)/3 | Nonrelativistic only |
+| `firehose_parameter` | 1 − (P_parallel,e − Q_e + P_parallel,i − Q_i)/B² | Nonrelativistic only |
+
+Q is pressure for either perpendicular direction; its trace contribution is
+2Q. The perpendicular temperature is a **guiding-center pressure-per-number
+moment temperature**, not a fitted Maxwellian, thermal-core, or Lorentz
+proper-frame temperature. Raw parallel stress is not thermal pressure.
+
+All centered parallel, total-temperature and firehose operations require an
+explicit **nonrelativistic producer contract**. A relativistic profile raises
+`DerivedSemanticsError` before arithmetic, without approximation or fallback.
+The NR subtraction does not generally remove the thermal-frame drift from
+gamma-weighted stresses. Relativistic historical movies are therefore never
+silently labelled as exact NR thermal quantities.
+
+Firehose is the **unsquared** tension factor, with B²=bx²+by²+bz². It requires
+exactly `neh, nih, pehpar, pihpar, pehperp, pihperp, jhpar, jihpar, bx, by, bz`.
+No extra 4π, square root or smoothing is applied. Isotropic fluid `pi` and `pc`
+cancel from anisotropy and are not loaded. A finite negative result is valid.
+
+### Validity, alignment and provenance
+
+Local invalidity becomes NaN; source arrays remain unchanged. Density zero is
+valid absence, while negative/nonfinite density is invalid. Ratios and centered
+pressure require n>0. Negative/nonfinite Q or M, negative corrected parallel
+pressure, and nonfinite arithmetic are invalid. Corrected pressure exactly zero
+is allowed. Small negative corrections are not clamped to zero. Firehose also
+requires finite B and finite B²>0. There are no arbitrary positive density/B
+floors; invalid constituent pressures cannot be hidden by the final sum.
+`validity_mask(result)` returns finite-value validity, including negative tension.
+Scientific masks are separate from the renderer's logarithmic display masks.
+
+Use `case.movie_dataset` for strict equality of actual times and source
+segment/local-frame provenance. Derived functions require matching dimensions,
+coordinates and observable provenance. Metadata conflicts raise
+`DerivedAlignmentError` or `DerivedSemanticsError`, both under
+`DerivedQuantityError`. They never nearest-align, interpolate, intersect or
+truncate data. External Datasets share coordinate indexes already; retained
+per-variable coordinate/provenance stamps in attrs are checked against one
+another and matching shared coordinates. Previously discarded alignment history
+cannot be reconstructed. Do not pass an externally outer/inner-aligned Dataset
+and assume that its lost original coverage can be certified.
+
+Output attrs include `scientific_quantity`, `species`, `population='particle'`,
+`source_variables`, `source_storage_names`, `formula`, `convention`,
+`moment_model`, `units_status`, `invalid_policy`, masses/current convention,
+producer flags and parameter provenance. Raw stress records `centered=False`;
+NR centered quantities record `centered=True` and current-based subtraction.
+Source selection/region attrs are copied; no region is inferred or selected.
+Changing a result's display/scientific label does not change storage mappings,
+formulas or recorded source identities.
+
+Units remain normalized:
+
+```text
+n_code = n/n0                  v_code = v/C_A0
+m_code = m/m_reference         B_code = B/B0
+P_code = P/(n0*m_reference*C_A0²) = P/(B0²/(4π))
+T_code = P_code/n_code = k_B*T/(m_reference*C_A0²)
+```
+
+Omit k_B if temperature is expressed as energy. Electron and ion temperatures
+share this global energy unit; do not divide electron temperature by m_e.
+No SI/cgs calibration or publication equivalence is claimed.
+
+### Compose with visualization
+
+This small example is explicitly synthetic NR data:
+
+```python
+import numpy as np
+import xarray as xr
+from kglobal_analysis.analysis import spacetime
+from kglobal_analysis.plotting import plot_scalar_map
+
+synthetic_profile = ParticleMomentProfile(.01, relativistic=False,
+                                          parameter_source='synthetic NR example')
+shape = (3, 4, 2)
+synthetic = xr.Dataset(
+    {name: (('time', 'x', 'y'), np.full(shape, value))
+     for name, value in {'nih': 2., 'pihpar': 56., 'jihpar': 10., 'pihperp': 6.}.items()},
+    coords={'time': [1., 2., 3.]},
+)
+temperature = particle_total_temperature(synthetic, species='ion', profile=synthetic_profile)
+# T_parallel=3, T_perp=3, T_total=3 despite the parallel drift.
+frame = temperature.isel(time=0).compute(scheduler='synchronous')
+plot = plot_scalar_map(frame, horizontal='x', vertical='y', colorbar_label='particle ion T, code units')
+st = spacetime(temperature, line_axis='x', fixed_indices={'y': 0}, times=[1., 3.])
+```
+
+The same derived time DataArray can feed `iter_movie_frames` or
+`render_frame_sequence`. No formula lives in plotting or animation. With
+Dask-backed movie Datasets, construction reads zero samples; computing an event
+culls other events and unrelated variables. Formulas never call `.compute()`.
+Eleven participating firehose fields can still require substantial memory for
+one event; laziness bounds time coverage, not memory to one source array.
+Spatial dimensions and orientation are preserved, including synthetic x/y/z
+volumes. No physical coordinates, z integration or column density are invented.
+
+Synthetic science and decoder-backed tests validate these contracts. Existing
+real metadata demonstrates relativistic rejection; a matched real density/moment
+fixture is not yet available, so no real thermal/firehose validation is claimed.
+A later small matched-event extract is preferable to full historical movies.
+Fluid/total-density helpers, arbitrary multispecies storage, exact relativistic
+thermal quantities, mean energy, ψ/field lines, spectrum conversion and fitting
+remain deferred.

@@ -132,6 +132,17 @@ class KGlobalCase:
 
         return movie_dataset(self, variables, byteorder=byteorder)
 
+    def particle_moment_profile(self):
+        """Resolve the standard producer's moment contract from parameter metadata.
+
+        This declares the supported producer profile, not executable provenance
+        certification. Missing literal electron mass or unsupported layout fails.
+        """
+        from .derived import ParticleMomentProfile
+
+        return ParticleMomentProfile.from_parameters(
+            self.parameters, parameter_source=str(self.parameter_file or 'missing parameters'))
+
     def bx_frame_count(self, segment: str) -> int:
         """Count complete 2D double-byte Bx frames using file size only."""
         from .bx import bx_frame_count
