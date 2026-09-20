@@ -12,7 +12,8 @@ load one bounded frame; timeline construction reads sizes and stdout metadata,
 not binary samples. All case access is read-only. Each lazy time chunk contains
 one whole spatial frame. No spatial chunking, region reader, four-byte reader,
 particle/checkpoint reader is provided. Verified particle-moment derived quantities
-and optional visualization are described below.
+and optional visualization are described below, along with explicit simulation
+geometry and periodic 2D magnetic-flux reconstruction.
 
 The decoder supports a dimension-aware volume layout. **Synthetic Nz > 1 layouts
 are tested; real-data validation remains 2D.** This does not validate real 3D
@@ -1149,7 +1150,8 @@ closes figures returned by static renderers.
 Dimension order, shape, spatial coordinates and units must match; scalar times
 must agree when both inputs provide them. There is no interpolation/alignment.
 An explicit coordinate override applies to both layers. These are not
-implicitly magnetic flux contours or field lines; no psi reconstruction exists.
+implicitly magnetic flux contours or field lines. The separate geometry/flux
+layer below can supply a scientifically defined 2D psi contour field.
 
 `index_cut` requires an explicit fixed index for every other dimension, retains
 scalar time and provenance, and rejects negative/out-of-range indices. It can
@@ -1443,5 +1445,114 @@ real metadata demonstrates relativistic rejection; a matched real density/moment
 fixture is not yet available, so no real thermal/firehose validation is claimed.
 A later small matched-event extract is preferable to full historical movies.
 Fluid/total-density helpers, arbitrary multispecies storage, exact relativistic
-thermal quantities, mean energy, ψ/field lines, spectrum conversion and fitting
+thermal quantities, mean energy, general field lines, spectrum conversion and fitting
 remain deferred.
+
+## Simulation geometry and periodic 2D magnetic flux
+
+Geometry is separate from `MovieFormat`, binary decoding, particle semantics,
+and plotting. `case.movie_geometry()` resolves the explicitly supported
+`kglobal-initrecon-periodic-2d-v1` profile from the standard movie configuration,
+`init_scheme initrecon`, `boundary_condition periodic`, local/decomposition
+dimensions, and positive finite literal `lx`, `ly`, `lz`. Missing, conflicting,
+unknown or expression-valued geometry fails; no CPP expressions are evaluated.
+This declares the supported producer contract, not certification of an unknown
+executable or compiler overrides. Other initializers require separate validation.
+
+`MovieGeometry` is frozen and can also be constructed explicitly for synthetic
+data with `MovieGeometry(Nx, Ny, Nz, lx, ly, lz)`. Its current profile fixes a
+zero origin and collocated cell centers:
+
+```text
+Nx = nx*pex; Ny = ny*pey; Nz = nz*pez
+dx = lx/Nx; dy = ly/Ny
+x[i] = (i + 0.5)*dx; y[j] = (j + 0.5)*dy
+```
+
+These are **code-normalized simulation coordinates**, not dimensional lengths.
+Current real geometry validation is 2D: `Nz=1` and `lz` are retained as storage
+provenance with `degenerate_z=True`. No resolved z coordinate or dz is invented.
+Resolved 3D, sliced z coordinates, nonuniform/staggered grids, nonperiodic
+boundaries and unknown profiles are rejected by this scientific layer.
+Synthetic 3D binary-layout support remains a separate capability.
+
+```python
+from kglobal_analysis.geometry import attach_movie_geometry
+from kglobal_analysis.flux import magnetic_flux_2d, magnetic_flux_diagnostics
+from kglobal_analysis.plotting import plot_scalar_map
+
+geometry = case.movie_geometry()
+ds = case.movie_dataset(["bx", "by"], byteorder="little")
+ds = attach_movie_geometry(ds, geometry)
+psi = magnetic_flux_2d(ds, geometry=geometry)
+diagnostics = magnetic_flux_diagnostics(ds, geometry=geometry)
+
+# Resolve only the requested event before passing it to the renderer.
+event = ds.assign(psi=psi).isel(time=0).compute()
+view = plot_scalar_map(event.bx, horizontal="x", vertical="y",
+                       contours=event.psi)
+```
+
+`attach_movie_geometry` accepts DataArrays/Datasets, preserves dimension order,
+sample data, laziness, time/frame coordinates and selection attrs, and returns a
+new object. Existing x/y coordinates must agree exactly; conflicting geometry
+or units raise `GeometryError`. Coordinates must be eager metadata. It never
+transposes or overwrites conflicting coordinates. `movie_dataset` does not
+automatically attach geometry. Flux functions also validate/attach geometry
+explicitly from their required `geometry=` argument.
+
+Flux uses **Bx=Dy psi, By=-Dx psi**, ignoring Bz. It returns a DataArray in the
+input's dimension order, with time/segment/local-frame provenance. Inputs must
+be a strictly aligned Dataset containing real code-normalized bx/by on the full
+x/y plane, optionally with time. Observable coordinate, storage identity and
+provenance conflicts raise `FluxError` (or `GeometryError`). No joins, nearest
+alignment, trimming or hidden z slicing occur. Prior external alignment that
+discarded original coverage cannot be detected retrospectively; prefer
+`case.movie_dataset`.
+
+For zero-mean B, the periodic spectral least-squares solution uses the **centered
+finite-difference** symbols, not continuum ik:
+
+```text
+Dx = i*sin(kx*dx)/dx; Dy = i*sin(ky*dy)/dy
+psi_hat = (conj(Dy)*Bx_hat - conj(Dx)*By_hat) / (abs(Dx)**2 + abs(Dy)**2)
+```
+
+The periodic component has zero spatial mean. Nonzero mean in-plane B is retained
+through `mean(Bx)*(y-mean(y)) - mean(By)*(x-mean(x))`. Total psi is generally
+nonperiodic when this term is present. Units are code-normalized flux-function
+units, conceptually B0*L0; no dimensional L0 or Webers are asserted.
+
+Zero and even-grid Nyquist derivative symbols are set exactly to zero by FFT
+index. Joint-null modes receive zero psi coefficients; checkerboard content is
+not recoverable through this derivative operator. No residual threshold or
+sample clipping is imposed. This method does not claim numerical identity with
+legacy IDL path integration or apply a publication sign flip.
+
+`magnetic_flux_diagnostics` returns a lazy Dataset with `psi`,
+`reconstructed_bx`, `reconstructed_by`, `residual_bx`, `residual_by`,
+`residual_magnitude`, `input_divergence`, `reconstructed_divergence`, and
+`null_magnitude`. Residuals are input minus reconstructed B. Null magnitude is
+the pointwise magnitude of joint-null B content after mean removal, not the
+entire residual. Diagnostics differentiate the periodic psi with centered
+periodic differences and add mean B analytically, avoiding a wrap seam in the
+linear term. Quantized/non-solenoidal fields can have nonzero residuals even
+when the projected divergence is near zero. Inspect these errors for the case;
+there is no universal acceptance tolerance.
+
+Any nonfinite Bx/By sample makes that evaluated event's psi and diagnostics NaN;
+other events remain independent. Dask construction reads zero samples. Computing
+one event reads only that event's bx/by, never bz or unrelated times. Time chunks
+must each contain one event; multi-event chunks fail instead of silently loading
+neighbors. Spatial chunks are combined lazily for a full-plane float64/complex128
+FFT. Full-plane FFTs need substantial working memory; this is time boundedness,
+not spatially local reconstruction. Nothing is computed or persisted automatically.
+
+M14 particle density or a supported NR temperature can replace the base scalar
+in the example after combining it with psi and computing one event. M13 performs
+only the presentation transpose. No formulas were added to plotting. Historical
+matched Bx/By reconstruction is not yet fixture-validated; current real checks
+cover geometry metadata, with numerical reconstruction and decoder culling
+validated synthetically. Nonperiodic solvers, dimensional conversion, general
+3D geometry/vector potentials, field-line tracing and topology diagnostics remain
+outside this interface.

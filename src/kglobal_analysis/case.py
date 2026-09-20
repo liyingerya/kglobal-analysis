@@ -132,6 +132,13 @@ class KGlobalCase:
 
         return movie_dataset(self, variables, byteorder=byteorder)
 
+    def movie_geometry(self):
+        """Resolve the supported periodic initrecon x/y cell-center geometry."""
+        from .geometry import MovieGeometry
+
+        return MovieGeometry.from_parameters(
+            self.parameters, parameter_source=str(self.parameter_file or 'missing parameters'))
+
     def particle_moment_profile(self):
         """Resolve the standard producer's moment contract from parameter metadata.
 
