@@ -137,6 +137,42 @@ class WorkflowTests(unittest.TestCase):
         result.isel(time=1).compute(scheduler='synchronous')
         self.assert_reads(case, {'nih', 'bx', 'by'})
 
+    def test_map_coordinate_attrs_may_differ(self):
+        original = w.flux.magnetic_flux_2d
+        def different_attrs(*args, **kwargs):
+            psi = original(*args, **kwargs)
+            return psi.assign_coords({axis: psi[axis].assign_attrs(
+                units='code_normalized', long_name='derived coordinate') for axis in ('x', 'y')})
+        case = SyntheticCase()
+        with patch.object(w.flux, 'magnetic_flux_2d', side_effect=different_attrs):
+            result = w.particle_map_series(case, 'number_density', species='ion')
+        self.assertEqual(case.reads, [])
+        self.assertEqual(result.x.attrs, {'units': 'code_normalized'})
+        result.isel(time=1).compute(scheduler='synchronous')
+        self.assert_reads(case, {'nih', 'bx', 'by'})
+
+    def test_map_coordinate_values_must_match_exactly(self):
+        original = w.flux.magnetic_flux_2d
+        for axis in ('x', 'y'):
+            def changed(*args, **kwargs):
+                psi = original(*args, **kwargs)
+                return psi.assign_coords({axis: psi[axis] + 1e-12})
+            with self.subTest(axis=axis), patch.object(w.flux, 'magnetic_flux_2d', side_effect=changed):
+                with self.assertRaises(derived.DerivedAlignmentError):
+                    w.particle_map_series(SyntheticCase(), 'number_density', species='ion')
+
+    def test_map_coordinate_dimensions_must_match(self):
+        original = w.flux.magnetic_flux_2d
+        for axis in ('x', 'y'):
+            def changed(*args, **kwargs):
+                psi = original(*args, **kwargs)
+                values = np.broadcast_to(psi[axis].values[:, None] if axis == 'x'
+                                         else psi[axis].values[None, :], (8, 6))
+                return psi.drop_vars(axis).assign_coords({axis: (('x', 'y'), values)})
+            with self.subTest(axis=axis), patch.object(w.flux, 'magnetic_flux_2d', side_effect=changed):
+                with self.assertRaises(derived.DerivedAlignmentError):
+                    w.particle_map_series(SyntheticCase(), 'number_density', species='ion')
+
     def test_maps_without_flux(self):
         for key in ('number_density', 'perpendicular_temperature', 'total_temperature'):
             case = SyntheticCase()

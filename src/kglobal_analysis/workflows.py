@@ -135,7 +135,10 @@ def _map_result(ds, field, geom, profile, quantity, species, include_flux):
         if array.dims != field.dims or set(array.coords) != set(field.coords):
             raise derived.DerivedAlignmentError('Workflow outputs have different dimensions/coordinates')
         for key in field.coords:
-            if not array[key].identical(field[key]):
+            # Older xarray arithmetic can drop coordinate attrs in psi. Source
+            # geometry is already validated; require exact dimensions/values,
+            # not incidental name/attr identity of the derived coordinates.
+            if not array[key].equals(field[key]):
                 raise derived.DerivedAlignmentError(f'Workflow coordinate conflict: {key}')
     result = xr.Dataset({name: array.variable for name, array in arrays.items()},
                         coords=field.coords)

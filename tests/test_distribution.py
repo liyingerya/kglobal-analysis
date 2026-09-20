@@ -1,7 +1,5 @@
 """Synthetic contract tests for reduced distributions, independent of raw data."""
-import builtins
 from dataclasses import FrozenInstanceError
-import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -307,14 +305,15 @@ class DistributionTests(unittest.TestCase):
             (self.root/name).touch()
         allowed = {self.log, self.root/'vdeparperp.016'}
         seen = []
-        builtin_open, io_open = builtins.open, io.open
-        def guard(opener):
-            def wrapped(file, *args, **kwargs):
-                self.assertIn(Path(file), allowed)
-                seen.append(Path(file))
-                return opener(file, *args, **kwargs)
-            return wrapped
-        with patch('builtins.open', guard(builtin_open)), patch('io.open', guard(io_open)), \
+        original = Path.open
+        def guard(path, *args, **kwargs):
+            self.assertIn(path, allowed)
+            self.assertEqual(args[0] if args else kwargs.get('mode', 'r'), 'r')
+            seen.append(path)
+            return original(path, *args, **kwargs)
+        # Both package readers use Path.open (read_text delegates to it).
+        # Python 3.10 caches io.open in pathlib's accessor, bypassing io spies.
+        with patch.object(Path, 'open', new=guard), \
              patch('numpy.fromfile', side_effect=AssertionError('binary read')), \
              patch('numpy.memmap', side_effect=AssertionError('binary read')), \
              patch.object(KGlobalCase, 'read_movie_frame', side_effect=AssertionError('movie read')):
