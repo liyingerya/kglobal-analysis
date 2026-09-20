@@ -18,3 +18,14 @@ __all__ = [
     "Parameters", "parse_parameters", "read_parameters", "BxSegment", "TimeMetadataError", "BxSeries",
     "MovieSegment", "MovieSeries", "MovieFormat", "VariableSpec", "VolumeLayout", "STANDARD_MOVIE_FORMAT",
 ]
+
+# User-facing orchestration; specialist science stays in its own modules.
+from .workflows import (
+    particle_quantity_catalog, particle_quantity_series, firehose_series,
+    magnetic_flux_series, particle_map_series, firehose_map_series,
+)
+
+__all__ += [
+    'particle_quantity_catalog', 'particle_quantity_series', 'firehose_series',
+    'magnetic_flux_series', 'particle_map_series', 'firehose_map_series',
+]

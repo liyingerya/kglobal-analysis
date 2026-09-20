@@ -1556,3 +1556,137 @@ cover geometry metadata, with numerical reconstruction and decoder culling
 validated synthetically. Nonperiodic solvers, dimensional conversion, general
 3D geometry/vector potentials, field-line tracing and topology diagnostics remain
 outside this interface.
+
+## Scientific workflows
+
+Request semantic particle quantities without knowing movie filenames:
+
+```python
+import kglobal_analysis as kga
+from kglobal_analysis.plotting import plot_scalar_map
+
+case = kga.KGlobalCase("/path/to/case")
+for item in kga.particle_quantity_catalog(case.particle_moment_profile()):
+    print(item.key, item.supported, item.reason)
+
+workflow = kga.particle_map_series(
+    case, "number_density", species="ion", include_flux=True,
+    byteorder="little",
+)
+frame = workflow.isel(time=0).compute()
+view = plot_scalar_map(frame.field, horizontal="x", vertical="y",
+                       contours=frame.psi)
+```
+
+`particle_quantity_catalog(profile)` returns immutable availability records for
+all seven keys, including reasons for unavailable operations. This is semantic
+availability, not a claim that the case contains all required files.
+
+| Semantic key | Meaning / restriction |
+|---|---|
+| `number_density` | Particle population number density |
+| `raw_parallel_stress` | Uncentered parallel stress |
+| `perpendicular_pressure` | Gyrotropic scalar perpendicular pressure |
+| `perpendicular_temperature` | Perpendicular pressure per particle number |
+| `parallel_pressure` | Exact centered pressure; NR only |
+| `parallel_temperature` | Exact centered parallel moment temperature; NR only |
+| `total_temperature` | Exact total moment temperature; NR only |
+
+Species must be `ion` or `electron`; population is explicitly particle. Ambiguous
+aliases such as `density` or `ion_temperature` are not accepted. A relativistic
+profile retains the first four operations and rejects the last three with
+`DerivedSemanticsError`, before source Dataset construction. There is no
+approximation override. Storage dependencies resolve through the existing
+scientific profile; workflows call the existing derived functions unchanged.
+
+For local algebra without the current 2D geometry restriction:
+
+```python
+scalar = kga.particle_quantity_series(
+    case, "perpendicular_temperature", species="electron", byteorder="little")
+# With a verified NR profile, "total_temperature" is also supported.
+tension = kga.firehose_series(nr_case, byteorder="little")
+```
+
+`nr_case` denotes a case whose parsed producer profile is nonrelativistic; it is
+not an override on `case`. Firehose is a separate two-species NR operation.
+`magnetic_flux_series(case, byteorder="little")` composes the verified geometry
+and flux layers, requires only Bx/By and does not require a particle profile.
+
+`particle_map_series` and `firehose_map_series` require the M15 2D geometry even
+with `include_flux=False`. They return ordinary Datasets with `field` and optional
+`psi`. Each constructs **one strict aligned source Dataset** for the dependency
+union, then derives both outputs from the same tasks. No post-hoc joins, coverage
+intersections, nearest-time matching or independent scalar/flux timelines occur.
+Firehose's Bx/By tasks are shared with psi when both outputs are computed together.
+No cache or persistence is introduced. Original science attrs, actual time,
+segment/frame provenance, selection metadata and simulation coordinates survive.
+
+All workflows are lazy: construction reads metadata only; computing a selected
+event reads only its required variables. Computing only `workflow.field` also
+culls unused psi inputs. Defaults use little-endian decoding; set `byteorder`
+explicitly for differently encoded files. No workflow selects a time for you.
+A caller requesting `.compute()` on the entire series can still use large memory.
+
+The same graph composes with existing analysis and rendering:
+
+```python
+from kglobal_analysis.analysis import spacetime
+from kglobal_analysis.animation import iter_movie_frames, render_frame_sequence
+
+# Choose these indices/times explicitly for your case; never infer a centerline.
+xt = spacetime(workflow.field, line_axis="x", fixed_indices={"y": y_index},
+               times=requested_actual_times)
+for event_index in selected_event_indices:
+    frame = workflow.isel(time=event_index).compute()
+    view = plot_scalar_map(frame.field, horizontal="x", vertical="y",
+                           contours=frame.psi)
+    # Save/use the figure, then close it before proceeding to the next event.
+
+for event in iter_movie_frames(workflow.field, times=requested_actual_times):
+    pass  # Consume and release each frame; do not collect the whole sequence.
+
+render_frame_sequence(workflow.field, "output/frames", horizontal="x", vertical="y",
+                      times=requested_actual_times, color_policy="global")
+```
+
+Global color limits use the existing two-pass rendering policy. Existing M13
+also accepts the workflow Dataset with `variable="field", contour_variable="psi"`
+for shared-event contour animation; no new animation API is needed.
+
+Reduced products remain separate from the movie registry and timeline:
+
+```python
+from kglobal_analysis.plotting import plot_energy_overlay, plot_distribution
+
+energy_views = plot_energy_overlay({
+    s: reduced_case.energy_spectrum(s, checkpoint=checkpoint)
+    for s in ("electron", "ion")
+})
+velocity = reduced_case.parallel_perpendicular_velocity_distribution(
+    "ion", checkpoint=checkpoint)
+position = reduced_case.position_parallel_velocity_distribution(
+    "ion", position_axis="x", checkpoint=checkpoint)
+velocity_view = plot_distribution(velocity)
+position_view = plot_distribution(position)
+```
+
+Here `reduced_case` is the case containing those products. Energy ordinates remain
+the **recorded legacy energy estimator**, not dN/dW or published F(W).
+Distributions remain **normalized_bin_mass**, not phase-space density. Checkpoint
+suffixes are identifiers, not absolute times. No fitting or count recovery is added.
+
+`examples/scientific_workflows.py` accepts case/output paths, selected event
+indices, an explicit y index, and optional separate reduced-product paths. It
+runs density/temperature maps with contours, exact-event comparisons, spacetime,
+and optional PNG sequences using these APIs. Available matched movies and the
+optional plotting dependency are required; it downloads nothing.
+
+General density/flux maps, perpendicular temperature, verified NR total temperature
+and firehose, spacetime, scalar animation, estimator overlays and reduced-product
+maps are supported workflow archetypes. Numerical movie-workflow validation is
+synthetic where matched real fields are unavailable. Exact published-panel
+reproduction still requires the exact run, time, ROI, producer, quantity semantics
+and plotting transformation. Exact relativistic parallel/total thermal quantities
+and firehose, mean energy, published spectrum conversion, fitting/break energies,
+and publication-specific flux identity remain scientifically blocked or deferred.
