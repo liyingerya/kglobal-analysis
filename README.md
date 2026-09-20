@@ -1749,3 +1749,9 @@ reproduction still requires the exact run, time, ROI, producer, quantity semanti
 and plotting transformation. Exact relativistic parallel/total thermal quantities
 and firehose, mean energy, published spectrum conversion, fitting/break energies,
 and publication-specific flux identity remain scientifically blocked or deferred.
+
+## License
+
+This repository and the kglobal-analysis package are released under the
+[MIT License](LICENSE). This license does not apply to external KGlobal
+simulation/core code or other upstream, legacy, or private materials.
